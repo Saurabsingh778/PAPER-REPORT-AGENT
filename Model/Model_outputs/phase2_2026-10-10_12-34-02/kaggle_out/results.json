@@ -1,0 +1,100 @@
+{
+ "setup": [
+  {
+   "cmd": "pip install -r requirements.txt",
+   "rc": 1,
+   "sec": 3,
+   "stdout": "",
+   "stderr": "ERROR: Could not find a version that satisfies the requirement torch==2.0.1 (from versions: 2.5.0, 2.5.1, 2.6.0, 2.7.0, 2.7.1, 2.8.0, 2.9.0, 2.9.1, 2.10.0, 2.11.0, 2.12.0, 2.12.1, 2.13.0, 2.14.0, 2.14.1)\nERROR: No matching distribution found for torch==2.0.1\n"
+  }
+ ],
+ "steps": [
+  {
+   "cmd": "python exp_4/l_j_baseline_5_fold.py",
+   "rc": 1,
+   "sec": 8,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/l_j_baseline_5_fold.py\", line 4, in <module>\n    from torch_geometric.data import Data, DataLoader\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 0
+  },
+  {
+   "cmd": "python glass_topology_test.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/glass_topology_test.py\", line 4, in <module>\n    from torch_geometric.data import Data, DataLoader\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 1
+  },
+  {
+   "cmd": "python glass_strain_normalized.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/glass_strain_normalized.py\", line 4, in <module>\n    from torch_geometric.data import Data, DataLoader\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 2
+  },
+  {
+   "cmd": "python exp_4/ka_new_val.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/ka_new_val.py\", line 19, in <module>\n    from torch_geometric.data import Data\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 3
+  },
+  {
+   "cmd": "python exp_4/ka_new_val.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/ka_new_val.py\", line 19, in <module>\n    from torch_geometric.data import Data\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 4
+  },
+  {
+   "cmd": "python exp_4/ka_new_val.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/ka_new_val.py\", line 19, in <module>\n    from torch_geometric.data import Data\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 5
+  },
+  {
+   "cmd": "python exp_4/ka_new_val.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/ka_new_val.py\", line 19, in <module>\n    from torch_geometric.data import Data\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 6
+  },
+  {
+   "cmd": "python exp_5/test_v1.py",
+   "rc": 1,
+   "sec": 6,
+   "stdout": "All imports OK \u2014 running pure PyTorch, no torch_geometric needed.\nDevice : cuda\n\n[1/5] Loading dataset ...\n",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_5/test_v1.py\", line 327, in <module>\n    with open(CFG[\"data_path\"], \"rb\") as f:\n         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/kaggle/input/datasets/saurabingh/fecttiv-dataset/fictive_temp_dataset.pkl'\n",
+   "claim_index": 7
+  },
+  {
+   "cmd": "python exp_5/test_v1.py",
+   "rc": 1,
+   "sec": 4,
+   "stdout": "All imports OK \u2014 running pure PyTorch, no torch_geometric needed.\nDevice : cuda\n\n[1/5] Loading dataset ...\n",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_5/test_v1.py\", line 327, in <module>\n    with open(CFG[\"data_path\"], \"rb\") as f:\n         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/kaggle/input/datasets/saurabingh/fecttiv-dataset/fictive_temp_dataset.pkl'\n",
+   "claim_index": 8
+  },
+  {
+   "cmd": "python exp_4/l_j_baseline_5_fold.py",
+   "rc": 1,
+   "sec": 2,
+   "stdout": "",
+   "stderr": "Traceback (most recent call last):\n  File \"/kaggle/working/repo/exp_4/l_j_baseline_5_fold.py\", line 4, in <module>\n    from torch_geometric.data import Data, DataLoader\nModuleNotFoundError: No module named 'torch_geometric'\n",
+   "claim_index": 9
+  }
+ ],
+ "clone": {
+  "cmd": "git clone --depth 1 https://github.com/Saurabsingh778/Thermal_history_in_glass repo",
+  "rc": 0,
+  "sec": 6,
+  "stdout": "",
+  "stderr": "Cloning into 'repo'...\n"
+ }
+}

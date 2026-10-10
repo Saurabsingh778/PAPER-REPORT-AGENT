@@ -1,0 +1,86 @@
+{
+  "reproduced": 0,
+  "total": 10,
+  "rows": [
+    {
+      "claim": "Using GATv2 graph neural networks as structural probes with systematic ablation on a Lennard-Jones model system, we achieve classification accuracy between fast- and slow-cooled glasses under 5-fold stratified cross-validation.",
+      "metric": "accuracy",
+      "paper": "95.10 \\pm 1.02\\%",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "Pure topological features fail at near-random accuracy.",
+      "metric": "accuracy",
+      "paper": "52\\%",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": false
+    },
+    {
+      "claim": "The signal survives per-sample instance normalisation.",
+      "metric": "accuracy",
+      "paper": "94.5\\%",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": false
+    },
+    {
+      "claim": "Using 5D pure-geometry bond statistics with no Hessian input and config-level stratified 5-fold cross-validation, we achieve accuracy on the Kob-Andersen binary mixture.",
+      "metric": "accuracy",
+      "paper": "96.23 \\pm 0.81\\%",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "The Kob-Andersen mixture binary classification yields an AUC score.",
+      "metric": "AUC",
+      "paper": "0.9935 \\pm 0.0021",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "The Kob-Andersen mixture binary classification yields an F1 score.",
+      "metric": "F1",
+      "paper": "0.9621 \\pm 0.0084",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "An ablation removing the Hessian entirely confirms that pairwise bond-length statistics are a sufficient geometric descriptor for thermal-history classification in the binary mixture.",
+      "metric": "accuracy",
+      "paper": "96.23\\%",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "The first principal component of the 64-dimensional latent space captures structural variance and is monotonically ordered with cooling rate across six of eight rates.",
+      "metric": "Spearman \\rho",
+      "paper": "-0.929",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "The first principal component has a p-value corresponding to its correlation with cooling rate.",
+      "metric": "p",
+      "paper": "8.6 \\times 10^{-4}",
+      "found": null,
+      "status": "run_failed",
+      "phase1_verified": true
+    },
+    {
+      "claim": "The baseline GNN trained on complete geometric information achieves AUC under 5-fold stratified cross-validation.",
+      "metric": "AUC",
+      "paper": "0.9906 \\pm 0.0036",
+      "found": null,
+      "status": "not_attempted",
+      "phase1_verified": true
+    }
+  ]
+}

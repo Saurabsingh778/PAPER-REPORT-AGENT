@@ -1,0 +1,10 @@
+{
+  "id": "saurabingh/repro-gpu-test",
+  "title": "repro-gpu-test",
+  "code_file": "job.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true
+}
