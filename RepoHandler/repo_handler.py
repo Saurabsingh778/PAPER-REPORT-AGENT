@@ -157,6 +157,10 @@ CRITICAL PLANNING GUIDELINES:
    - cwd must be "{{REPO}}" or "{{REPO}}/<subdir>".
 4. SIGNALS & METRIC EXTRACTION:
    - For every claim covered by a step, define a regex line_pattern in signals.
+   - HARD RULE: every claim index listed in a step's `covers` MUST have a matching entry in that
+     same step's `signals` (claim_id + metric + line_pattern). If a step cannot print a verifiable
+     number for a claim, do NOT put that claim in `covers`; mark it "unclear" or "unreproducible"
+     in claims with a reason instead.
    - Example line_pattern: "(?i)accuracy[:\\s=]+([0-9]+\\.?[0-9]*)"
 5. CLAIM MAPPING:
    - Every claim (1-indexed based on the order in CLAIMS) must be listed in claims.
@@ -164,6 +168,56 @@ CRITICAL PLANNING GUIDELINES:
 6. PATH REWRITES:
    - If scripts contain hardcoded local paths (e.g., ./data, /path/to/data), provide a PathRewrite patch replacing them with {{DATA}}/<folder>.
 """
+
+
+MAX_SPEC_ATTEMPTS = 3
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    return "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())
+
+
+def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS):
+    """Ask Gemini for a RunSpec. If the reply fails schema validation, send the validator's
+    errors back and ask for a corrected spec. Every attempt's raw reply is logged."""
+    contents = prompt
+    last_error: Optional[ValidationError] = None
+    for attempt in range(1, max_attempts + 1):
+        print(f"[*] Requesting RunSpec generation from Gemini (attempt {attempt}/{max_attempts})...")
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RunSpec,
+                temperature=0.1,
+            ),
+        )
+        raw = response.text or ""
+        # Stored before validating, so a rejected reply is always inspectable.
+        plog.save_artifact(f"planner_response_attempt{attempt}.json", raw)
+        plog.info("model responded", attempt=attempt, model=MODEL,
+                  usage=getattr(response, "usage_metadata", None))
+        try:
+            return RunSpec.model_validate_json(raw), response
+        except ValidationError as exc:
+            last_error = exc
+            problems = _format_validation_error(exc)
+            plog.warning(f"RunSpec rejected by validator (attempt {attempt}/{max_attempts}): {problems}")
+            print(f"[!] RunSpec rejected by validator (attempt {attempt}/{max_attempts}): {problems}")
+            if attempt == max_attempts:
+                break
+            contents = (
+                prompt
+                + "\n\nYOUR PREVIOUS RESPONSE WAS REJECTED BY THE SCHEMA VALIDATOR.\n"
+                + f"VALIDATION ERRORS:\n{problems}\n\n"
+                + f"PREVIOUS RESPONSE:\n{raw}\n\n"
+                + "Return a corrected, complete RunSpec JSON that fixes every listed error. "
+                + "Remember: every claim in a step's `covers` needs a matching signal in that step; "
+                + "if you cannot define a signal, remove the claim from `covers` and mark it "
+                + "'unclear' or 'unreproducible' with a reason (only 'mapped' claims list step_ids)."
+            )
+    raise last_error
 
 
 def generate_run_spec(
@@ -204,22 +258,7 @@ def generate_run_spec(
     )
 
     plog.save_artifact("planner_prompt.txt", prompt)
-    print("[*] Requesting RunSpec generation from Gemini...")
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=RunSpec,
-            temperature=0.1,
-        ),
-    )
-
-    # Keep the raw reply before validating: a schema failure below is then still debuggable.
-    plog.save_artifact("planner_response_raw.json", response.text or "")
-    plog.info("model responded", model=MODEL, usage=getattr(response, "usage_metadata", None))
-
-    spec = RunSpec.model_validate_json(response.text)
+    spec, response = _request_spec(prompt, plog)
     print(f"[✓] RunSpec generated. Target hardware GPU: {spec.hardware.gpu}")
     plog.info("RunSpec validated", gpu=spec.hardware.gpu, steps=len(spec.steps),
               claims=len(spec.claims), confidence=spec.confidence)
