@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+from Logger import get_phase, link_artifact, logged, phase, start_run
+
 load_dotenv()
 
 OUT_DIR = Path("/home/saurab/research-paper-agent/Model/Model_outputs")
@@ -43,6 +45,10 @@ def candidates(text):
         out.append(f"- {url}\n  context: ...{ctx}...")
     return out
 
+@logged(
+    "gemini_extract",
+    summarize=lambda e: f"{len(e.main_results)} results, {len(e.code_repos)} repos, {len(e.data_links)} data links",
+)
 def extract(prompt) -> Extraction:
     try:
         it = client.interactions.create(
@@ -54,15 +60,19 @@ def extract(prompt) -> Extraction:
                 "schema": Extraction.model_json_schema(),
             },
         )
+        # Raw model reply is stored before validation so a schema failure stays debuggable.
+        get_phase().save_artifact("extract_response_structured.json", it.output_text)
         return Extraction.model_validate_json(it.output_text)
     except Exception as e:
         # Fallback for models that don't support response_format (e.g. Gemma): ask for JSON in the prompt
         print(f"structured output failed ({type(e).__name__}: {str(e)[:120]}), falling back to plain JSON")
+        get_phase().warning(f"structured output failed, falling back to plain JSON: {type(e).__name__}: {e}")
         schema = json.dumps(Extraction.model_json_schema())
         txt = client.interactions.create(
             model=MODEL,
             input=prompt + f"\n\nReturn ONLY JSON matching this schema, no commentary:\n{schema}",
         ).output_text.strip()
+        get_phase().save_artifact("extract_response_fallback.txt", txt)
         txt = re.sub(r"^```(?:json)?\s*|\s*```$", "", txt)
         return Extraction.model_validate_json(txt)
 
@@ -74,6 +84,8 @@ def main(out_dir):
     text = (out / "paper.md").read_text(encoding="utf-8")
     cands = candidates(text)
     print(f"{len(cands)} candidate links found by regex")
+    get_phase().info("paper loaded", paper_chars=len(text), candidate_links=len(cands), model=MODEL)
+    get_phase().save_artifact("candidate_links.txt", "\n".join(cands) or "(none)")
 
     data = extract(PROMPT.format(candidates="\n".join(cands) or "(none)", paper=text))
 
@@ -110,5 +122,19 @@ def main(out_dir):
     (OUT_DIR / f"phase1_{stamp}.json").write_text(json.dumps(final, indent=2), encoding="utf-8")
     print(f"Saved to {OUT_DIR}/phase1_{stamp}.md")
 
+    unverified = [r["claim"] for r in results if not r["verified"]]
+    get_phase().info("extraction written", results=len(results), results_unverified=len(unverified),
+                     repos=len(repos), data_links=len(datas), output=str(OUT_DIR / f"phase1_{stamp}.json"))
+    for claim in unverified:
+        get_phase().warning(f"result value not found in paper text: {claim}")
+    get_phase().save_artifact("extraction_final.json", final)
+    # Lets the Phase 2 run find this run as its upstream.
+    link_artifact(OUT_DIR / f"phase1_{stamp}.json", "phase1_json")
+    link_artifact(OUT_DIR / f"phase1_{stamp}.md", "phase1_markdown")
+
 if __name__ == "__main__":
-    main(sys.argv[1])
+    out_dir = sys.argv[1]
+    with start_run("phase1_extraction", upstream_artifact=Path(out_dir) / "paper.md",
+                   meta={"out_dir": out_dir, "model": MODEL}):
+        with phase("phase1_extraction", "LLM extraction of results, code repos and data links"):
+            main(out_dir)

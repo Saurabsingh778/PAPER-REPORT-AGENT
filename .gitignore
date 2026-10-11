@@ -71,6 +71,7 @@ Downloads/
 Pdf-Reader/Output_2
 eggs/
 .eggs/
+Logs/
 lib/
 lib64/
 parts/

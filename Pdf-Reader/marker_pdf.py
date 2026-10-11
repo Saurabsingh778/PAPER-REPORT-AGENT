@@ -11,6 +11,11 @@ import json
 from pathlib import Path
 from PIL import Image
 
+# Run as a plain script ("Pdf-Reader" is not an importable package name), so put the
+# project root on sys.path to make the shared Logger package importable.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from Logger import get_phase, link_artifact, phase, start_run
+
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.config.parser import ConfigParser
@@ -106,6 +111,10 @@ def read_pdf(pdf_path: str, out_dir: str):
     )
 
     print(f"Success! All files cleanly exported to: {out}")
+    get_phase().info("pdf parsed", pdf=str(pdf), markdown_chars=len(text), images=len(images),
+                     blocks=len(blocks), output_dir=str(out))
+    # Lets the extraction run find this run as its upstream.
+    link_artifact(out / "paper.md", "paper_markdown")
     return out
 
 
@@ -114,4 +123,6 @@ if __name__ == "__main__":
         print("Usage: python marker_pdf.py <input_pdf_path> <output_dir>")
         sys.exit(1)
 
-    read_pdf(sys.argv[1], sys.argv[2])
+    with start_run("phase0_pdf_read", meta={"pdf": sys.argv[1], "out_dir": sys.argv[2], "engine": "marker"}):
+        with phase("phase0_pdf_read", "convert the PDF to markdown, figures and block JSON"):
+            read_pdf(sys.argv[1], sys.argv[2])

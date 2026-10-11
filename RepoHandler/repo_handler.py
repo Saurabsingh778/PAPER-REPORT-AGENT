@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from google.genai import types
 from pydantic import ValidationError
 
+from Logger import get_phase
 from Model.gemini import client, MODEL
 from Schema.RunSpec import (
     RunSpec,
@@ -186,6 +187,12 @@ def generate_run_spec(
     scripts_info = scanner.scan_python_scripts()
     data_files = RepoScanner.scan_data_dir(data_dir) if data_dir else []
 
+    plog = get_phase()
+    plog.info("repository scanned", commit=commit_sha, files=len(files), scripts=len(scripts_info),
+              data_files=len(data_files), readme_chars=len(readme),
+              gpu_script_hits=[p for p, i in scripts_info.items() if i["uses_gpu_indicators"]])
+    plog.save_artifact("repo_scan.json", {"files": files, "scripts": scripts_info, "data_files": data_files})
+
     prompt = build_run_spec_prompt(
         extraction=extraction,
         repo_url=repo_url,
@@ -196,6 +203,7 @@ def generate_run_spec(
         data_files=data_files,
     )
 
+    plog.save_artifact("planner_prompt.txt", prompt)
     print("[*] Requesting RunSpec generation from Gemini...")
     response = client.models.generate_content(
         model=MODEL,
@@ -207,8 +215,14 @@ def generate_run_spec(
         ),
     )
 
+    # Keep the raw reply before validating: a schema failure below is then still debuggable.
+    plog.save_artifact("planner_response_raw.json", response.text or "")
+    plog.info("model responded", model=MODEL, usage=getattr(response, "usage_metadata", None))
+
     spec = RunSpec.model_validate_json(response.text)
     print(f"[✓] RunSpec generated. Target hardware GPU: {spec.hardware.gpu}")
+    plog.info("RunSpec validated", gpu=spec.hardware.gpu, steps=len(spec.steps),
+              claims=len(spec.claims), confidence=spec.confidence)
 
     # Local pre-flight check
     problems = check_against_repo(spec, repo_dir)
@@ -217,8 +231,10 @@ def generate_run_spec(
         for prob in problems:
             print(f"  - {prob}")
             spec.warnings.append(prob)
+            plog.warning(f"pre-flight: {prob}")
     else:
         print("[✓] Pre-flight check passed with 0 errors.")
+        plog.info("pre-flight check passed")
 
     # Save detailed logs
     if log_dir is None:
@@ -243,5 +259,6 @@ def generate_run_spec(
     log_path = log_dir / f"repo_handler_{Path(extraction_json_path).stem}.json"
     log_path.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
     print(f"[✓] RepoHandler log saved to: {log_path}")
+    plog.save_artifact("repo_handler_log.json", log_path)
 
     return spec
