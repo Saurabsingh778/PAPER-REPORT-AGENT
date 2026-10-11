@@ -44,10 +44,11 @@ def main(arg=None):
         return
 
     repo = inspect_repo(repos[0])
+    print("Kaggle datasets the scripts expect:", repo["kaggle_datasets"] or "none")
     plan = make_plan(ex["main_results"], repo)
     (run_dir / "plan.json").write_text(plan.model_dump_json(indent=2))
 
-    run_out = run_on_kaggle(plan, repos[0], run_dir)
+    run_out = run_on_kaggle(plan, repos[0], run_dir, datasets=repo["kaggle_datasets"])
     rows, n_ok = compare(ex["main_results"], run_out)
     print(write_report(run_dir, rows, n_ok, plan.unreproducible))
 

@@ -6,8 +6,11 @@ from pathlib import Path
 
 from .config import KAGGLE_USER
 
+# The kernel does its own environment setup. It never runs `pip install -r requirements.txt`:
+# old exact pins (torch==2.0.1 ...) don't exist for Kaggle's Python and one failure aborts
+# the whole install, which is what broke the first run.
 KERNEL_TEMPLATE = r'''
-import subprocess, json, time, os, sys
+import subprocess, json, time, os, re, sys
 PLAN = json.loads({plan_json!r})
 REPO = {repo_url!r}
 W = "/kaggle/working"
@@ -23,17 +26,46 @@ def run(cmd, cwd, timeout):
         so = e.stdout if isinstance(e.stdout, str) else ""
         return {{"cmd": cmd, "rc": -9, "sec": timeout, "stdout": so[-3000:], "stderr": "TIMEOUT"}}
 
+def save():
+    json.dump(out, open(W + "/results.json", "w"), indent=1)
+
 print(run("nvidia-smi -L", W, 60)["stdout"])
 out["clone"] = run(f"git clone --depth 1 {{REPO}} repo", W, 600)
 RD = W + "/repo"
-for c in PLAN["setup_commands"]:
-    out["setup"].append(run(c, RD, 1800))
+
+# ---- environment: install each package separately, unpinned, skipping what Kaggle ships ----
+SKIP = {{"torch", "torchvision", "torchaudio", "jax", "jaxlib", "pickle5", "torch-scatter",
+        "torch-sparse", "torch-cluster", "numpy", "scipy", "pandas", "scikit-learn",
+        "matplotlib", "networkx", "tqdm", "seaborn"}}
+req = os.path.join(RD, "requirements.txt")
+pkgs = []
+if os.path.exists(req):
+    for line in open(req):
+        line = line.split("#")[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        name = re.split(r"[=<>!~\[ ]", line)[0].strip()
+        if name and name.lower() not in SKIP:
+            pkgs.append(name)
+for name in pkgs:                      # e.g. torch-geometric, jax-md
+    out["setup"].append(run(f"pip install -q {{name}}", RD, 900))
+# torch_geometric's loader import moved between releases; fall back to the paper's pinned version
+chk = run("python -c \"import torch_geometric; from torch_geometric.loader import DataLoader\"", RD, 120)
+if chk["rc"] != 0:
+    out["setup"].append(run("pip install -q torch_geometric==2.3.1", RD, 900))
+save()
+
+# ---- steps, in order; same command is never run twice ----
+done = {{}}
 for s in PLAN["steps"]:
-    r = run(s["command"], RD, s["timeout_min"] * 60)
-    r["claim_index"] = s["claim_index"]
+    if s["command"] in done:
+        r = dict(done[s["command"]])
+    else:
+        r = run(s["command"], RD, s["timeout_min"] * 60)
+        done[s["command"]] = r
+    r["claim_indices"] = s["claim_indices"]
     out["steps"].append(r)
-    json.dump(out, open(W + "/results.json", "w"), indent=1)  # save progress
-json.dump(out, open(W + "/results.json", "w"), indent=1)
+    save()
 '''
 
 
@@ -41,7 +73,7 @@ def kaggle(*args):
     return subprocess.run(["kaggle", *args], capture_output=True, text=True)
 
 
-def write_kernel(plan, repo_url, workdir, slug):
+def write_kernel(plan, repo_url, workdir, slug, datasets):
     d = Path(workdir) / "kernel"
     d.mkdir(parents=True, exist_ok=True)
     (d / "script.py").write_text(
@@ -58,7 +90,8 @@ def write_kernel(plan, repo_url, workdir, slug):
                 "is_private": "true",
                 "enable_gpu": "true",
                 "enable_internet": "true",
-                "dataset_sources": [],
+                # scripts that hardcode /kaggle/input/datasets/<owner>/<slug>/... need these mounted
+                "dataset_sources": list(datasets),
                 "competition_sources": [],
                 "kernel_sources": [],
             }
@@ -67,8 +100,9 @@ def write_kernel(plan, repo_url, workdir, slug):
     return d
 
 
-def run_on_kaggle(plan, repo_url, workdir, slug="repro-agent-run", poll=30, max_wait_min=240):
-    d = write_kernel(plan, repo_url, workdir, slug)
+def run_on_kaggle(plan, repo_url, workdir, datasets=(), slug="repro-agent-run",
+                  poll=30, max_wait_min=240):
+    d = write_kernel(plan, repo_url, workdir, slug, datasets)
     p = kaggle("kernels", "push", "-p", str(d))
     print(p.stdout, p.stderr)
 

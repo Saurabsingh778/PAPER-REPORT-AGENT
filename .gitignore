@@ -66,6 +66,9 @@ build/
 develop-eggs/
 dist/
 downloads/
+Downloads/
+/Model/Model_outputs
+Pdf-Reader/Output_2
 eggs/
 .eggs/
 lib/

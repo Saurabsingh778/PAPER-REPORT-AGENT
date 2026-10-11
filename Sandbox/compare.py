@@ -1,6 +1,8 @@
 """Rule-based comparison of paper values vs. Kaggle run output.
 
 Deliberately no LLM here, so the reproducibility verdict can't be hallucinated.
+Failures are classified so an environment/data problem in the agent is never reported
+as if the paper's number had failed to reproduce.
 """
 import re
 
@@ -22,11 +24,24 @@ def _match(n, paper, tol):
     return abs(a - p) <= tol * p or abs(a * 100 - p) <= tol * p
 
 
+def classify_failure(step):
+    """Why a step with rc != 0 failed: agent-side (env/data) vs. the code itself."""
+    err = step.get("stderr", "")
+    if "TIMEOUT" in err:
+        return "timeout"
+    if "ModuleNotFoundError" in err or "ImportError" in err:
+        return "env_failed"
+    if "FileNotFoundError" in err and "/kaggle/input" in err:
+        return "data_missing"
+    return "run_failed"
+
+
 def compare(results, run_out, tol=0.02):
     """Return (rows, n_reproduced)."""
     by_claim = {}
     for s in (run_out or {}).get("steps", []):
-        by_claim.setdefault(s["claim_index"], []).append(s)
+        for i in s.get("claim_indices", []):
+            by_claim.setdefault(i, []).append(s)
 
     rows = []
     for i, r in enumerate(results, 1):
@@ -35,13 +50,10 @@ def compare(results, run_out, tol=0.02):
         for s in by_claim.get(i, []):
             nums = [float(x) for x in NUM.findall(s["stdout"])]
             hits = [n for n in nums if paper is not None and _match(n, paper, tol)]
-            if s["rc"] != 0:
-                status = "run_failed"
-            elif hits:
+            if hits:
                 status, found = "reproduced", hits[0]
                 break
-            else:
-                status = "ran_but_mismatch"
+            status = classify_failure(s) if s["rc"] != 0 else "ran_but_mismatch"
         rows.append(
             {
                 "claim": r["claim"],
@@ -49,7 +61,6 @@ def compare(results, run_out, tol=0.02):
                 "paper": r["value"],
                 "found": found,
                 "status": status,
-                # Phase 1 couldn't find this exact string in paper.md; treat the target with care
                 "phase1_verified": r.get("verified", True),
             }
         )
