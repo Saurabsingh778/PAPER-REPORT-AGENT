@@ -106,15 +106,22 @@ print("\n[✓] Local execution complete. results.json generated.")
 '''
 
 
-def probe_docker_gpu() -> Dict[str, Any]:
-    """Probes Docker's NVIDIA runtime and returns the raw outcome (for logging)."""
+DEFAULT_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
+
+
+def probe_docker_gpu(image: str = DEFAULT_IMAGE, timeout: int = 180) -> Dict[str, Any]:
+    """Probes Docker's NVIDIA runtime and returns the raw outcome (for logging).
+
+    Uses the image the run will use anyway (so no second image is pulled) and a generous
+    timeout: a first-time pull easily exceeds a few seconds and must not read as "no GPU".
+    """
     t0 = time.time()
     try:
         res = subprocess.run(
-            ["docker", "run", "--rm", "--gpus", "all", "nvidia/cuda:12.0.0-base-ubuntu22.04", "nvidia-smi"],
+            ["docker", "run", "--rm", "--gpus", "all", image, "nvidia-smi", "-L"],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=timeout,
         )
         return {"supported": res.returncode == 0, "returncode": res.returncode,
                 "stdout": res.stdout, "stderr": res.stderr, "duration_s": round(time.time() - t0, 3)}
@@ -123,9 +130,9 @@ def probe_docker_gpu() -> Dict[str, Any]:
                 "duration_s": round(time.time() - t0, 3), "error": f"{type(exc).__name__}: {exc}"}
 
 
-def check_docker_gpu_support() -> bool:
+def check_docker_gpu_support(image: str = DEFAULT_IMAGE) -> bool:
     """Verifies whether Docker has access to NVIDIA GPUs via nvidia-container-toolkit."""
-    return probe_docker_gpu()["supported"]
+    return probe_docker_gpu(image)["supported"]
 
 
 def run_locally(
@@ -133,7 +140,7 @@ def run_locally(
     workdir: Path,
     repo_dir: Path,
     data_dir: Path,
-    image: str = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime",
+    image: str = DEFAULT_IMAGE,
 ) -> Optional[Dict[str, Any]]:
     """Runs the RunSpec inside a local Docker container.
 
@@ -173,6 +180,7 @@ def _run_locally(
 
     # 2. Prepare data directory mount (matching spec.data dest mapping)
     working_data_dir = runner_dir / "data"
+    shutil.rmtree(working_data_dir, ignore_errors=True)  # rebuilt each run (drops stale copies/links)
     working_data_dir.mkdir(exist_ok=True)
     data_mounts = []
     for d in spec.data:
@@ -185,14 +193,16 @@ def _run_locally(
         mount = {"id": d.id, "dest": dest_name, "kind": d.kind, "source": None, "mode": "none",
                  "candidates": [str(c) for c in candidates]}
         if candidates and not target.exists():
-            # Link or copy to working_data_dir/dest
+            # Real copy, NOT a symlink: a symlink stores an absolute host path that does not
+            # exist inside the container (it dangled, so the step saw no data), and steps
+            # may write next to their input data, which must not touch ./Downloads.
             src = candidates[0]
-            if os.name == "posix":
-                target.symlink_to(src.resolve(), target_is_directory=True)
-                mount.update(source=str(src.resolve()), mode="symlink")
-            else:
+            if src.is_dir():
                 shutil.copytree(src, target)
-                mount.update(source=str(src), mode="copy")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+            mount.update(source=str(src), mode="copy")
         data_mounts.append(mount)
     sess.workspace(runner_dir, repo_dir, working_repo_dir, data_dir, data_mounts)
 
@@ -206,7 +216,7 @@ def _run_locally(
     gpu_requested = spec.hardware.gpu in ("required", "helpful")
     gpu_args = []
     if gpu_requested:
-        probe = probe_docker_gpu()
+        probe = probe_docker_gpu(image)
         sess.gpu_check(
             requested=True,
             supported=probe["supported"],
