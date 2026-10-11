@@ -90,6 +90,22 @@ class RepoScanner:
             }
         return scripts
 
+    @staticmethod
+    def scan_data_dir(data_dir: Path, max_entries: int = 200) -> List[str]:
+        """List files in the downloaded data directory (relative paths, capped)."""
+        data_dir = Path(data_dir)
+        if not data_dir.exists():
+            return []
+        entries = []
+        for p in sorted(data_dir.rglob("*")):
+            if any(part.startswith(".") for part in p.relative_to(data_dir).parts):
+                continue
+            if p.is_file():
+                entries.append(str(p.relative_to(data_dir)))
+                if len(entries) >= max_entries:
+                    break
+        return entries
+
 
 def build_run_spec_prompt(
     extraction: Dict[str, Any],
@@ -98,6 +114,7 @@ def build_run_spec_prompt(
     files: List[str],
     readme: str,
     scripts_info: Dict[str, Any],
+    data_files: Optional[List[str]] = None,
 ) -> str:
     claims = extraction.get("main_results", [])
     data_links = extraction.get("data_links", [])
@@ -117,6 +134,9 @@ DATA LINKS MENTIONED IN PAPER:
 
 REPOSITORY FILE LIST:
 {json.dumps(files[:250], indent=2)}
+
+DOWNLOADED DATA FILES (paths relative to {{DATA}}; empty means no data was downloaded):
+{json.dumps(data_files or [], indent=2)}
 
 README EXCERPT:
 {readme}
@@ -149,11 +169,13 @@ def generate_run_spec(
     extraction_json_path: str | Path,
     repo_dir: str | Path,
     repo_url: str,
+    data_dir: Optional[str | Path] = None,
     log_dir: Optional[Path] = None,
 ) -> RunSpec:
     """Analyzes repo, calls Gemini to build RunSpec, validates it, and saves logs."""
     extraction_json_path = Path(extraction_json_path)
     repo_dir = Path(repo_dir)
+    data_dir = Path(data_dir) if data_dir is not None else None
 
     extraction = json.loads(extraction_json_path.read_text(encoding="utf-8"))
     scanner = RepoScanner(repo_dir)
@@ -162,6 +184,7 @@ def generate_run_spec(
     files = scanner.scan_files()
     readme = scanner.read_readme()
     scripts_info = scanner.scan_python_scripts()
+    data_files = RepoScanner.scan_data_dir(data_dir) if data_dir else []
 
     prompt = build_run_spec_prompt(
         extraction=extraction,
@@ -170,6 +193,7 @@ def generate_run_spec(
         files=files,
         readme=readme,
         scripts_info=scripts_info,
+        data_files=data_files,
     )
 
     print("[*] Requesting RunSpec generation from Gemini...")
@@ -205,6 +229,7 @@ def generate_run_spec(
         "repo_url": repo_url,
         "commit_sha": commit_sha,
         "scanned_files_count": len(files),
+        "data_files_count": len(data_files),
         "hardware_decision": {
             "gpu": spec.hardware.gpu,
             "reason": spec.hardware.reason,
