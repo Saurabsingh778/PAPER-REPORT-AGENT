@@ -9,6 +9,7 @@ from Logger import call_logged, get_phase, link_artifact, phase, start_run
 from RepoHandler.featch_repo import featch_and_save
 from RepoHandler.repo_handler import generate_run_spec
 from Sandbox.compare import compare
+from Sandbox.matcher import collect_output, llm_match
 from Sandbox.github_client import parse_repo
 from Sandbox.kaggle_runner import run_on_kaggle
 from Sandbox.local_runner import run_locally
@@ -90,8 +91,20 @@ def run_pipeline(phase1_path: str, use_local: bool = False):
         # 4. Compare outputs & extract signals
         with phase("phase2_compare", "compare reproduced numbers against the paper's claims"):
             print("[4/5] Comparing reproduced results against paper claims...")
+            claims = extraction["main_results"]
+            raw_dir = out_dir / "local_run" / "out" / "raw" if use_local else None
+            output = collect_output(run_out, raw_dir)
+            get_phase().save_artifact("match_input_output.txt", output)
+            matches = None
+            try:
+                found = call_logged(llm_match, claims, output, _name="llm_match",
+                                    _summarize=lambda m: f"{sum(x.found for x in m)}/{len(m)} located")
+                matches = {m.claim_index: m for m in found}
+                get_phase().save_artifact("llm_matches.json", [m.model_dump() for m in found])
+            except Exception as exc:  # fall back to the heuristic matcher
+                print(f"[!] LLM matching failed ({exc}); using heuristic matching.")
             rows, n_ok = call_logged(
-                compare, extraction["main_results"], run_out, _name="compare",
+                compare, claims, run_out, matches=matches, output=output, _name="compare",
                 _summarize=lambda r: f"{r[1]}/{len(r[0])} claims reproduced",
             )
             get_phase().save_artifact("comparison_rows.json", rows)

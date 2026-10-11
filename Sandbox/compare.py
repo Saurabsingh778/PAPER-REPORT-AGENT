@@ -36,8 +36,27 @@ def classify_failure(step):
     return "run_failed"
 
 
-def compare(results, run_out, tol=0.02):
-    """Return (rows, n_reproduced)."""
+DEFAULT_TOL = 0.03  # a result within 3% (relative) of the paper's value counts as reproduced
+
+
+def _find_match(stdout, paper, tol):
+    """First number in the output within tol of the paper value, with the line it came from."""
+    for line in (stdout or "").splitlines():
+        for x in NUM.findall(line):
+            if _match(float(x), paper, tol):
+                return float(x), line.strip()
+    return None
+
+
+def compare(results, run_out, tol=DEFAULT_TOL, matches=None, output=""):
+    """Return (rows, n_reproduced). Each row records the output line that matched.
+
+    `matches` (optional, {claim_index: ClaimMatch} from Sandbox.matcher) switches claim
+    matching from the number-in-stdout heuristic to the LLM-located, code-verified evidence.
+    The heuristic stays as the fallback when no LLM matches are supplied."""
+    if matches is not None:
+        from Sandbox.matcher import verify
+
     by_claim = {}
     for s in (run_out or {}).get("steps", []):
         for i in s.get("claim_indices", []):
@@ -46,12 +65,22 @@ def compare(results, run_out, tol=0.02):
     rows = []
     for i, r in enumerate(results, 1):
         paper = first_number(r["value"])
-        status, found = "not_attempted", None
+        status, found, matched_line = "not_attempted", None, None
+        if matches is not None:
+            steps = (run_out or {}).get("steps", [])
+            if steps and all(st["rc"] != 0 for st in steps):
+                status = classify_failure(steps[0])
+            elif steps and i in matches:
+                status, found, matched_line = verify(matches[i], paper, output, tol)
+            rows.append({"claim": r["claim"], "metric": r["metric"], "paper": r["value"],
+                         "found": found, "matched_line": matched_line, "status": status,
+                         "phase1_verified": r.get("verified", True),
+                         "match_reasoning": getattr(matches.get(i), "reasoning", "")})
+            continue
         for s in by_claim.get(i, []):
-            nums = [float(x) for x in NUM.findall(s["stdout"])]
-            hits = [n for n in nums if paper is not None and _match(n, paper, tol)]
-            if hits:
-                status, found = "reproduced", hits[0]
+            hit = _find_match(s["stdout"], paper, tol) if paper is not None else None
+            if hit:
+                status, (found, matched_line) = "reproduced", hit
                 break
             status = classify_failure(s) if s["rc"] != 0 else "ran_but_mismatch"
         rows.append(
@@ -60,6 +89,7 @@ def compare(results, run_out, tol=0.02):
                 "metric": r["metric"],
                 "paper": r["value"],
                 "found": found,
+                "matched_line": matched_line,
                 "status": status,
                 "phase1_verified": r.get("verified", True),
             }
