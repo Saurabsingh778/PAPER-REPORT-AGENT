@@ -81,7 +81,7 @@ class RepoScanner:
             metric_prints = [
                 line.strip() for line in lines
                 if any(k in line.lower() for k in ("print(", "logger.info", "accuracy", "auc", "f1", "loss", "metric"))
-            ][:15]
+            ][:40]
 
             scripts[rel] = {
                 "head": head,
@@ -116,6 +116,7 @@ def build_run_spec_prompt(
     readme: str,
     scripts_info: Dict[str, Any],
     data_files: Optional[List[str]] = None,
+    resources: str = "",
 ) -> str:
     claims = extraction.get("main_results", [])
     data_links = extraction.get("data_links", [])
@@ -138,6 +139,9 @@ REPOSITORY FILE LIST:
 
 DOWNLOADED DATA FILES (paths relative to {{DATA}}; empty means no data was downloaded):
 {json.dumps(data_files or [], indent=2)}
+
+LOCAL MACHINE THE RUN WILL USE (plan within these limits):
+{resources or "unknown"}
 
 README EXCERPT:
 {readme}
@@ -165,6 +169,14 @@ CRITICAL PLANNING GUIDELINES:
 5. CLAIM MAPPING:
    - Every claim (1-indexed based on the order in CLAIMS) must be listed in claims.
    - If a claim cannot be verified because data/compute is missing, mark its status as "unreproducible" or "unclear" with a detailed reason.
+   - TRY TO REPRODUCE EVERY CLAIM. "Not part of the default pipeline", "extended ablation" or "value is
+     computed internally but not printed" are NOT valid reasons to give up. First look for: another
+     script in the file list, an argparse flag/config for the variant (feature set, normalisation,
+     ablation, test), or a function that computes the value. Then add a separate step for it (command
+     with the right flags, or `python -c "..."` that imports the repo's function and PRINTS the value)
+     with its own signal, confidence "low" if unsure.
+   - Mark a claim unreproducible only if (a) no code in the repo can produce it, (b) its data is
+     unavailable, or (c) it clearly exceeds the LOCAL MACHINE limits above (VRAM, runtime). State which.
 6. PATH REWRITES:
    - If scripts contain hardcoded local paths (e.g., ./data, /path/to/data), provide a PathRewrite patch replacing them with {{DATA}}/<folder>.
 """
@@ -220,12 +232,47 @@ def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS):
     raise last_error
 
 
+def _unmapped(spec: RunSpec):
+    return [c for c in spec.claims if c.status != "mapped"]
+
+
+def _fill_gaps(prompt: str, spec: RunSpec, response, plog, rounds: int = 1):
+    """Second planning pass for claims the first plan gave up on: ask for extra steps that
+    reproduce them. The new plan is kept only if it validates and maps strictly more claims."""
+    for rnd in range(1, rounds + 1):
+        gaps = _unmapped(spec)
+        if not gaps:
+            break
+        listing = "\n".join(f"- claim {c.claim_id} ({c.status}): {c.reason}" for c in gaps)
+        print(f"[*] {len(gaps)} claim(s) unmapped; asking planner to find a way to reproduce them (pass {rnd})...")
+        extra = (
+            "\n\nYOUR PREVIOUS PLAN LEFT THESE CLAIMS UNMAPPED:\n" + listing +
+            "\n\nPREVIOUS PLAN:\n" + spec.model_dump_json() +
+            "\n\nReturn a COMPLETE RunSpec that keeps the working steps and ADDS steps (other scripts, "
+            "flags/ablation variants, or `python -c` calls that print the value) so these claims are "
+            "mapped. Give up on a claim only for reasons (a)-(c) in guideline 5, and say which."
+        )
+        try:
+            new_spec, new_resp = _request_spec(prompt + extra, plog)
+        except Exception as exc:  # keep the first plan
+            plog.warning(f"gap-fill pass failed, keeping first plan: {exc}")
+            break
+        before, after = len(spec.mapped_claim_ids()), len(new_spec.mapped_claim_ids())
+        plog.info("gap-fill pass", round=rnd, mapped_before=before, mapped_after=after)
+        if after > before:
+            spec, response = new_spec, new_resp
+        else:
+            break
+    return spec, response
+
+
 def generate_run_spec(
     extraction_json_path: str | Path,
     repo_dir: str | Path,
     repo_url: str,
     data_dir: Optional[str | Path] = None,
     log_dir: Optional[Path] = None,
+    resources: str = "",
 ) -> RunSpec:
     """Analyzes repo, calls Gemini to build RunSpec, validates it, and saves logs."""
     extraction_json_path = Path(extraction_json_path)
@@ -255,10 +302,12 @@ def generate_run_spec(
         readme=readme,
         scripts_info=scripts_info,
         data_files=data_files,
+        resources=resources,
     )
 
     plog.save_artifact("planner_prompt.txt", prompt)
     spec, response = _request_spec(prompt, plog)
+    spec, response = _fill_gaps(prompt, spec, response, plog)
     print(f"[✓] RunSpec generated. Target hardware GPU: {spec.hardware.gpu}")
     plog.info("RunSpec validated", gpu=spec.hardware.gpu, steps=len(spec.steps),
               claims=len(spec.claims), confidence=spec.confidence)

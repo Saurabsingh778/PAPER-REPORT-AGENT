@@ -9,6 +9,7 @@ from Logger import call_logged, get_phase, link_artifact, phase, start_run
 from RepoHandler.featch_repo import featch_and_save
 from RepoHandler.repo_handler import generate_run_spec
 from Sandbox.compare import compare
+from Sandbox.feasibility import apply_gate, check_spec, probe_local_resources, resources_for_prompt
 from Sandbox.matcher import collect_output, llm_match
 from Sandbox.github_client import parse_repo
 from Sandbox.kaggle_runner import run_on_kaggle
@@ -53,6 +54,16 @@ def run_pipeline(phase1_path: str, use_local: bool = False):
         out_dir = p1.parent / f"phase2_{p1.stem.removeprefix('phase1_')}"
         out_dir.mkdir(exist_ok=True)
 
+        resources_text = ""
+        res = None
+        if use_local:
+            with phase("phase2_resources", "probe what this machine can run (GPU/VRAM/RAM/disk/Docker)"):
+                res = call_logged(probe_local_resources, _name="probe_local_resources",
+                                  _summarize=resources_for_prompt)
+                resources_text = resources_for_prompt(res)
+                get_phase().save_artifact("local_resources.json", res)
+                print(f"[*] Local machine: {resources_text}")
+
         # 2. Run RepoHandler to build and validate RunSpec
         with phase("phase2_planner", "RepoHandler AI planner builds and validates the RunSpec"):
             print("[2/5] Running RepoHandler AI planner...")
@@ -63,11 +74,28 @@ def run_pipeline(phase1_path: str, use_local: bool = False):
                 repo_url=repo_url,
                 data_dir=local_data_dir,
                 log_dir=out_dir / "logs",
+                resources=resources_text,
                 _name="generate_run_spec",
                 _summarize=_describe_spec,
             )
             (out_dir / "run_spec.json").write_text(spec.model_dump_json(indent=2), encoding="utf-8")
             get_phase().save_artifact("run_spec.json", out_dir / "run_spec.json")
+
+        # 2b. Feasibility gate: run what this machine can run, skip (and explain) the rest
+        if use_local:
+            with phase("phase2_feasibility", "check each planned step/claim against local resources"):
+                report = call_logged(check_spec, spec, res, _name="check_spec",
+                                     _summarize=lambda r: f"runnable={r['runnable']}, "
+                                     f"{sum(v == 'feasible' for v in r['claims'].values())}/{len(r['claims'])} claims feasible")
+                get_phase().save_artifact("feasibility.json", report)
+                for cid, v in report["claims"].items():
+                    print(f"  claim {cid}: {v}")
+                if not report["runnable"]:
+                    print(f"[x] Nothing can run on this machine: {report['global_blockers'] or report['steps']}")
+                    get_phase().error("nothing runnable locally", blockers=report["global_blockers"])
+                    return
+                spec = apply_gate(spec, report)
+                (out_dir / "run_spec.json").write_text(spec.model_dump_json(indent=2), encoding="utf-8")
 
         # 3. Fire Execution Session
         with phase("phase2_execution", "local Docker session" if use_local else "Kaggle session"):
