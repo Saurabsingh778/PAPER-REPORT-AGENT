@@ -1,0 +1,1036 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Report Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234f46e5'/%3E%3Cpath d='M9.5 5h5M10.5 5v5L6.8 16.5a1.6 1.6 0 0 0 1.4 2.5h7.6a1.6 1.6 0 0 0 1.4-2.5L13.5 10V5' stroke='white' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f4f5f8;--panel:#ffffff;--panel2:#f8f9fb;--line:#e3e6ec;--line2:#edeff3;
+  --text:#0f172a;--muted:#5b6679;--faint:#8b95a7;
+  --accent:#4f46e5;--accent2:#6366f1;--accent-weak:#eceeff;--on-accent:#fff;
+  --ok:#0f7a55;--ok-bg:#e3f5ed;--warn:#a85b00;--warn-bg:#fff1d9;--bad:#bd2430;--bad-bg:#fde8e9;
+  --info:#0b6a9a;--info-bg:#e2f1fa;--violet:#6a3fd1;--violet-bg:#eee8fd;--gray-bg:#eceef2;
+  --console:#0d1117;--console-text:#c9d1d9;--console-dim:#6e7681;
+  --shadow:0 1px 2px rgba(15,23,42,.05),0 2px 8px rgba(15,23,42,.04);
+  --shadow-lg:0 12px 40px rgba(15,23,42,.14);
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --r:12px;color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#090c12;--panel:#10141c;--panel2:#141a24;--line:#222a38;--line2:#1a212d;
+  --text:#e8ecf3;--muted:#98a3b6;--faint:#667189;
+  --accent:#8f96ff;--accent2:#7c85ff;--accent-weak:#1a1f3f;--on-accent:#0b0e1a;
+  --ok:#3ddc9e;--ok-bg:#0e2a21;--warn:#f5b84b;--warn-bg:#2c2109;--bad:#ff8087;--bad-bg:#2e1317;
+  --info:#58b9ee;--info-bg:#0c2432;--violet:#b49cff;--violet-bg:#231b40;--gray-bg:#1b2230;
+  --console:#070a0f;--console-text:#c9d1d9;--console-dim:#5d6676;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 2px 10px rgba(0,0,0,.25);--shadow-lg:0 12px 40px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+code,pre,.mono{font-family:var(--mono)}
+.ic{display:inline-flex;vertical-align:middle;flex:none}.ic svg{display:block}
+
+/* ---------- shell */
+.app{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:100vh}
+.side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 14px;background:var(--panel);border-right:1px solid var(--line)}
+.brand{display:flex;gap:11px;align-items:center;padding:4px 8px 18px}
+.brand .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent2),#8b5cf6);color:#fff;display:grid;place-items:center;box-shadow:0 4px 12px rgba(99,102,241,.35)}
+.brand b{display:block;font-size:14px;letter-spacing:-.01em;line-height:1.15}
+.brand span{font-size:11.5px;color:var(--faint)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;color:var(--muted);font-weight:500;cursor:pointer;text-decoration:none}
+.nav a:hover{background:var(--panel2);color:var(--text)}
+.nav a.on{background:var(--accent-weak);color:var(--accent)}
+.nav .count{margin-left:auto;font-size:11.5px;background:var(--gray-bg);color:var(--muted);padding:1px 7px;border-radius:99px}
+.nav a.on .count{background:transparent;color:var(--accent)}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);margin-left:auto;box-shadow:0 0 0 0 var(--accent);animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(99,102,241,.55)}70%{box-shadow:0 0 0 8px rgba(99,102,241,0)}100%{box-shadow:0 0 0 0 rgba(99,102,241,0)}}
+.side .grow{flex:1}
+.side .foot{font-size:11.5px;color:var(--faint);padding:10px 8px 0;border-top:1px solid var(--line2);word-break:break-all}
+.side .foot b{color:var(--muted);font-weight:600;display:block;margin-bottom:2px}
+.main{min-width:0}
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:12px 32px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line2);min-height:58px}
+.top h1{font-size:16px;margin:0;letter-spacing:-.01em;font-weight:650}
+.crumb{color:var(--faint);font-size:13px}
+.top .sp{flex:1}
+.conn{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--muted);padding:4px 10px;border:1px solid var(--line);border-radius:99px;background:var(--panel)}
+.conn i{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.conn.ok i{background:var(--ok)}.conn.demo i{background:var(--warn)}.conn.bad i{background:var(--bad)}
+.iconbtn{width:34px;height:34px;display:grid;place-items:center;border:1px solid var(--line);background:var(--panel);border-radius:9px;cursor:pointer;color:var(--muted)}
+.iconbtn:hover{color:var(--text);border-color:var(--faint)}
+.page{padding:26px 32px 64px;max-width:1320px}
+.banner{display:flex;gap:10px;align-items:center;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:18px;border:1px solid}
+.banner.warn{background:var(--warn-bg);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.banner.bad{background:var(--bad-bg);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 30%,transparent)}
+.banner.info{background:var(--accent-weak);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 25%,transparent)}
+.banner a{font-weight:600;text-decoration:underline}
+
+/* ---------- primitives */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line2)}
+.card-h h2,.card-h h3{margin:0;font-size:13.5px;font-weight:650;letter-spacing:-.005em}
+.card-h .sub{color:var(--faint);font-size:12.5px}.card-h .sp{flex:1}
+.card-b{padding:18px}
+.grid{display:grid;gap:18px}.g2{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr)}.g2e{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.stack{display:flex;flex-direction:column;gap:18px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.muted{color:var(--muted)}.faint{color:var(--faint)}.small{font-size:12.5px}.tiny{font-size:11.5px}
+.btn{display:inline-flex;gap:8px;align-items:center;justify-content:center;border:1px solid var(--line);background:var(--panel);padding:8px 14px;border-radius:9px;font-weight:550;cursor:pointer;white-space:nowrap;text-decoration:none;color:var(--text)}
+.btn:hover{border-color:var(--faint);text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);box-shadow:0 2px 10px color-mix(in srgb,var(--accent) 35%,transparent)}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.lg{padding:12px 20px;font-size:14.5px;border-radius:11px}
+.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+.btn[disabled]{opacity:.5;cursor:not-allowed;filter:none;box-shadow:none}
+.seg{display:inline-flex;background:var(--gray-bg);padding:3px;border-radius:10px;gap:2px}
+.seg button{border:0;background:transparent;padding:6px 13px;border-radius:8px;cursor:pointer;color:var(--muted);font-weight:550;display:inline-flex;gap:7px;align-items:center}
+.seg button.on{background:var(--panel);color:var(--text);box-shadow:var(--shadow)}
+.switch{position:relative;width:38px;height:22px;flex:none;border-radius:99px;background:var(--line);border:0;cursor:pointer;transition:.15s}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:.15s}
+.switch.on{background:var(--accent)}.switch.on::after{left:19px}
+.field{display:flex;flex-direction:column;gap:7px}
+.field>label,.lbl{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.chip{display:inline-flex;gap:5px;align-items:center;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;white-space:nowrap;background:var(--gray-bg);color:var(--muted)}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}.chip.warn{background:var(--warn-bg);color:var(--warn)}.chip.bad{background:var(--bad-bg);color:var(--bad)}
+.chip.info{background:var(--info-bg);color:var(--info)}.chip.violet{background:var(--violet-bg);color:var(--violet)}.chip.accent{background:var(--accent-weak);color:var(--accent)}
+.chip i{width:6px;height:6px;border-radius:50%;background:currentColor}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:7px 16px;font-size:13px}.kv dt{color:var(--faint)}.kv dd{margin:0;min-width:0;word-break:break-word}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:22px 0 20px;overflow-x:auto}
+.tabs a{padding:10px 14px;color:var(--muted);font-weight:550;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;text-decoration:none;display:flex;gap:8px;align-items:center}
+.tabs a:hover{color:var(--text)}.tabs a.on{color:var(--accent);border-color:var(--accent)}
+.tabs .n{font-size:11px;background:var(--gray-bg);border-radius:99px;padding:0 7px;color:var(--muted)}
+.empty{padding:44px 20px;text-align:center;color:var(--faint)}
+.empty .ic{opacity:.5;margin-bottom:8px}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th{text-align:left;font-size:11.5px;font-weight:650;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel2);white-space:nowrap}
+table.t td{padding:11px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+table.t tr.click{cursor:pointer}table.t tr.click:hover td{background:var(--panel2)}
+table.t tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bar{height:6px;border-radius:99px;background:var(--gray-bg);overflow:hidden;display:flex}
+.bar>i{display:block;height:100%}
+.codebox{font:12.5px/1.55 var(--mono);background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:9px 12px;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+.spin{width:14px;height:14px;border:2px solid color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor;border-radius:50%;animation:rot .8s linear infinite;display:inline-block}
+@keyframes rot{to{transform:rotate(360deg)}}
+.toast{position:fixed;right:22px;bottom:22px;z-index:90;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;box-shadow:var(--shadow-lg);font-weight:550;max-width:420px}
+
+/* ---------- new run */
+.drop{border:2px dashed var(--line);border-radius:14px;padding:38px 20px;text-align:center;cursor:pointer;background:var(--panel2);transition:.15s}
+.drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-weak)}
+.drop .big{width:52px;height:52px;border-radius:14px;background:var(--accent-weak);color:var(--accent);display:grid;place-items:center;margin:0 auto 12px}
+.drop h3{margin:0 0 4px;font-size:15px}
+.file{display:flex;gap:14px;align-items:center;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+.file .big{width:42px;height:42px;border-radius:10px;background:var(--bad-bg);color:var(--bad);display:grid;place-items:center;flex:none;font-size:10.5px;font-weight:800}
+.opt{display:grid;grid-template-columns:200px 1fr;gap:6px 24px;align-items:center;padding:14px 0;border-bottom:1px solid var(--line2)}
+.opt:last-child{border-bottom:0}
+.opt b{font-weight:600}.opt p{margin:2px 0 0;color:var(--faint);font-size:12.5px}
+.check{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line2);font-size:13px}
+.check:last-child{border:0}
+.check .dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;flex:none;margin-top:1px}
+.check .dot.ok{background:var(--ok-bg);color:var(--ok)}.check .dot.bad{background:var(--bad-bg);color:var(--bad)}.check .dot.warn{background:var(--warn-bg);color:var(--warn)}.check .dot.wait{background:var(--gray-bg);color:var(--faint)}
+.check b{font-weight:600;display:block}.check span{color:var(--muted);font-size:12.5px;word-break:break-word}
+.flow{display:flex;flex-direction:column;gap:0}
+.flow>div{display:flex;gap:12px;padding:8px 0;position:relative}
+.flow>div:not(:last-child)::before{content:"";position:absolute;left:13px;top:34px;bottom:-6px;width:1px;background:var(--line)}
+.flow .n{width:27px;height:27px;border-radius:50%;background:var(--accent-weak);color:var(--accent);display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}
+.flow b{display:block;font-size:13px}.flow span{color:var(--faint);font-size:12.5px}
+
+/* ---------- live */
+.rail{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.stage{position:relative;padding:16px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);box-shadow:var(--shadow);transition:.2s}
+.stage .top2{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.stage .badge{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--gray-bg);color:var(--faint);flex:none}
+.stage h4{margin:0;font-size:13.5px}.stage p{margin:0;color:var(--faint);font-size:12.5px;min-height:36px}
+.stage .st{margin-top:10px;font-size:12.5px;font-weight:600;display:flex;gap:8px;align-items:center;color:var(--faint)}
+.stage .msg{font-weight:400;color:var(--muted);font-size:12px;margin-top:4px;word-break:break-word}
+.stage.running{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 16%,transparent),var(--shadow)}
+.stage.running .badge{background:var(--accent-weak);color:var(--accent)}.stage.running .st{color:var(--accent)}
+.stage.done .badge{background:var(--ok-bg);color:var(--ok)}.stage.done .st{color:var(--ok)}
+.stage.reused .badge{background:var(--info-bg);color:var(--info)}.stage.reused .st{color:var(--info)}
+.stage.failed{border-color:var(--bad)}.stage.failed .badge{background:var(--bad-bg);color:var(--bad)}.stage.failed .st{color:var(--bad)}
+.stage:not(:last-child)::after{content:"";position:absolute;right:-15px;top:30px;width:16px;height:2px;background:var(--line)}
+.stage.done:not(:last-child)::after{background:var(--ok)}
+.subs{display:flex;gap:6px;flex-wrap:wrap}
+.sstep{display:flex;gap:7px;align-items:center;padding:6px 12px;border-radius:99px;font-size:12.5px;font-weight:550;background:var(--gray-bg);color:var(--faint)}
+.sstep.active{background:var(--accent-weak);color:var(--accent)}.sstep.done{background:var(--ok-bg);color:var(--ok)}.sstep.skip{opacity:.5;text-decoration:line-through}
+.console{background:var(--console);color:var(--console-text);border-radius:0 0 var(--r) var(--r);height:430px;overflow:auto;font:12.5px/1.6 var(--mono);padding:10px 0}
+.console .ln{padding:0 16px;white-space:pre-wrap;word-break:break-word;display:flex;gap:12px}
+.console .ln:hover{background:rgba(255,255,255,.04)}
+.console .ts{color:var(--console-dim);flex:none;user-select:none}
+.console .hl{color:#a5b4fc;font-weight:700}.console .err{color:#ff8b92}.console .warn{color:#f5c26b}.console .step{color:#6ee7b7}.console .dim{color:var(--console-dim)}
+.console .none{color:var(--console-dim);padding:20px 16px}
+.tl{display:flex;flex-direction:column;max-height:430px;overflow:auto}
+.tl>div{display:flex;gap:11px;padding:9px 18px;border-bottom:1px solid var(--line2);font-size:12.5px}
+.tl>div:last-child{border:0}
+.tl time{color:var(--faint);font-family:var(--mono);font-size:11.5px;flex:none;width:58px;padding-top:1px}
+.hero{display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+.hero h2{margin:0 0 4px;font-size:21px;letter-spacing:-.02em;line-height:1.25}
+.ring{position:relative;width:118px;height:118px;flex:none}
+.ring svg{transform:rotate(-90deg)}.ring .c{position:absolute;inset:0;display:grid;place-items:center;text-align:center;line-height:1.1}
+.ring .c b{font-size:25px;letter-spacing:-.03em}.ring .c span{font-size:11.5px;color:var(--faint)}
+.kpi{padding:16px 18px}.kpi .v{font-size:25px;font-weight:700;letter-spacing:-.03em;line-height:1.1}.kpi .l{color:var(--faint);font-size:12.5px;margin-top:4px}
+.dets td{background:var(--panel2)!important}
+.det{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 28px;padding:6px 4px}
+.det h5{margin:0 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint)}
+.step-card{padding:16px 18px;border-bottom:1px solid var(--line2)}.step-card:last-child{border:0}
+.ev{display:flex;gap:8px;align-items:baseline;font-size:12.5px;margin-top:6px;color:var(--muted)}
+.ev .chip{font-size:10.5px;padding:1px 7px;flex:none}
+.fig{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.fig img{width:100%;height:150px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:10px;cursor:zoom-in;padding:6px}
+.lightbox{position:fixed;inset:0;background:rgba(5,8,14,.86);z-index:100;display:grid;place-items:center;padding:30px;cursor:zoom-out}
+.lightbox img{max-width:100%;max-height:100%;background:#fff;border-radius:8px}
+.md{font-size:14px;line-height:1.65;max-width:900px}
+.md h1{font-size:22px;letter-spacing:-.02em}.md h2{font-size:18px;margin-top:1.6em;padding-bottom:.3em;border-bottom:1px solid var(--line2)}.md h3{font-size:15px;margin-top:1.4em}
+.md code{background:var(--panel2);border:1px solid var(--line2);padding:1px 6px;border-radius:5px;font-size:12.5px}
+.md pre{background:var(--panel2);border:1px solid var(--line2);padding:12px;border-radius:8px;overflow:auto}.md pre code{border:0;padding:0;background:none}
+.md table{border-collapse:collapse;display:block;overflow-x:auto;margin:12px 0}.md th,.md td{border:1px solid var(--line);padding:6px 11px;text-align:left}.md th{background:var(--panel2)}
+.md img{max-width:100%;border-radius:8px}.md blockquote{margin:10px 0;padding:2px 14px;border-left:3px solid var(--line);color:var(--muted)}
+.ftree summary{cursor:pointer;padding:9px 18px;font-weight:600;display:flex;gap:9px;align-items:center;border-bottom:1px solid var(--line2);list-style:none}
+.ftree summary::-webkit-details-marker{display:none}
+.frow{display:flex;gap:12px;align-items:center;padding:7px 18px 7px 44px;border-bottom:1px solid var(--line2);font-size:12.5px}
+.frow .p{flex:1;min-width:0;word-break:break-all;font-family:var(--mono)}
+.search{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);border-radius:9px;padding:6px 11px;color:var(--faint)}
+.search input{border:0;outline:0;background:transparent;min-width:160px;color:var(--text)}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.filters button{border:1px solid var(--line);background:var(--panel);padding:4px 11px;border-radius:99px;cursor:pointer;font-size:12.5px;font-weight:550;color:var(--muted)}
+.filters button.on{background:var(--accent-weak);color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+@media(max-width:1100px){.g2,.g3,.g4{grid-template-columns:1fr 1fr}.rail{grid-template-columns:1fr 1fr}.stage::after{display:none!important}}
+@media(max-width:860px){
+  .app{grid-template-columns:1fr}.side{position:static;height:auto;flex-direction:row;align-items:center;gap:12px;padding:10px 14px;overflow-x:auto}
+  .brand{padding:0}.brand span,.side .foot,.side .grow{display:none}.nav{flex-direction:row}
+  .top,.page{padding-left:16px;padding-right:16px}.g2,.g2e,.g3,.g4,.det,.rail{grid-template-columns:1fr}.opt{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
+/* ============================================================ tiny DOM toolkit (no innerHTML on data) */
+function h(tag, props, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  add(el, kids);
+  return el;
+}
+function add(el, kids) {
+  for (const k of kids.flat(Infinity)) {
+    if (k == null || k === false) continue;
+    el.append(k.nodeType ? k : document.createTextNode(String(k)));
+  }
+  return el;
+}
+function mount(el, ...kids) { el.replaceChildren(); add(el, kids); return el; }
+const $ = (s, r = document) => r.querySelector(s);
+
+const ICONS = {
+  flask: 'M9.5 3h5M10.5 3v6.5L5.3 18.2A2 2 0 0 0 7 21h10a2 2 0 0 0 1.7-2.8L13.5 9.5V3M7.6 15h8.8',
+  upload: 'M12 16V4m0 0L7 9m5-5 5 5M4 20h16', file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5',
+  play: 'M7 4.5l12 7.5-12 7.5z', check: 'M5 12.5l4.5 4.5L19 7.5', x: 'M6 6l12 12M18 6L6 18',
+  alert: 'M12 9v4m0 4h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+  cpu: 'M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M5 5h14v14H5z',
+  box: 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8',
+  cloud: 'M17.5 19a4.5 4.5 0 1 0-1-8.9A6 6 0 0 0 4.5 12 3.5 3.5 0 0 0 6 19z',
+  history: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2',
+  layers: 'M12 3l9 5-9 5-9-5zM3 12.5l9 5 9-5M3 17l9 5 9-5',
+  search: 'M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM21 21l-4.3-4.3',
+  download: 'M12 4v12m0 0l-5-5m5 5l5-5M4 20h16',
+  link: 'M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1',
+  chev: 'M9 6l6 6-6 6', down: 'M6 9l6 6 6-6', refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7',
+  sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
+  moon: 'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
+  terminal: 'M4 17l6-6-6-6M12 19h8', folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  ext: 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', plus: 'M12 5v14M5 12h14',
+  info: 'M12 16v-4m0-4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z', skip: 'M5 5l10 7-10 7zM19 5v14',
+  zap: 'M13 2L4 14h7l-1 8 9-12h-7z', image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01', list: 'M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01',
+  git: 'M6 3v12m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 0a9 9 0 0 1-9 9',
+};
+function ic(name, size = 16, sw = 2) {
+  const s = h('span', { class: 'ic' });
+  s.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="${ICONS[name] || ''}"/></svg>`;
+  return s;
+}
+
+/* ============================================================ formatting helpers */
+const SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻' };
+function tex(s) {
+  if (s == null) return '';
+  return String(s).replace(/\$/g, '')
+    .replace(/\\pm/g, '±').replace(/\\times/g, '×').replace(/\\%/g, '%').replace(/\\rho/g, 'ρ').replace(/\\sigma/g, 'σ')
+    .replace(/\\alpha/g, 'α').replace(/\\beta/g, 'β').replace(/\\approx/g, '≈').replace(/\\leq?/g, '≤').replace(/\\geq?/g, '≥')
+    .replace(/\\cdot/g, '·').replace(/\\mathrm\{([^}]*)\}/g, '$1').replace(/\\text\{([^}]*)\}/g, '$1')
+    .replace(/\^\{?(-?\d+)\}?/g, (_, d) => [...d].map(c => SUP[c] || c).join(''))
+    .replace(/_\{([^}]*)\}/g, '$1').replace(/\\,|\\;|\\ /g, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+function firstNumber(s) {
+  const t = String(s ?? '').replace(/(\d+(?:\.\d+)?)\s*\\times\s*10\^\{?\s*(-?\d+)\s*\}?/g, '$1e$2');
+  const m = t.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+function delta(paper, found) {      // relative difference in %, tolerant of percent-vs-fraction like the backend
+  const p = firstNumber(paper), f = typeof found === 'number' ? found : firstNumber(found);
+  if (p == null || f == null || p === 0) return null;
+  const a = Math.abs(f - p) / Math.abs(p), b = Math.abs(f * 100 - p) / Math.abs(p);
+  return Math.min(a, b) * 100;
+}
+const fmtBytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+function fmtDur(sec) {
+  if (sec == null || isNaN(sec)) return '–';
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : m ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+}
+function relTime(iso) {
+  const t = Date.parse(iso); if (isNaN(t)) return '–';
+  const d = (Date.now() - t) / 1000;
+  if (d < 60) return 'just now'; if (d < 3600) return Math.floor(d / 60) + ' min ago';
+  if (d < 86400) return Math.floor(d / 3600) + ' h ago'; if (d < 604800) return Math.floor(d / 86400) + ' d ago';
+  return new Date(t).toLocaleDateString();
+}
+const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
+const durBetween = (a, b) => (a && b) ? (Date.parse(b) - Date.parse(a)) / 1000 : null;
+const shortSha = s => (s || '').slice(0, 9);
+
+const STATUS = {
+  reproduced: ['Reproduced', 'ok'], ran_but_mismatch: ['Ran, value differs', 'warn'], not_attempted: ['Not attempted', ''],
+  timeout: ['Timed out', 'warn'], env_failed: ['Environment error', 'bad'], data_missing: ['Data missing', 'violet'], run_failed: ['Run failed', 'bad'],
+};
+const STATUS_COLOR = { reproduced: 'var(--ok)', ran_but_mismatch: 'var(--warn)', not_attempted: 'var(--faint)', timeout: '#e08a1e', env_failed: 'var(--bad)', data_missing: 'var(--violet)', run_failed: '#d6455a' };
+function statusChip(s) { const [l, c] = STATUS[s] || [s, '']; return h('span', { class: 'chip ' + c }, h('i'), l); }
+const RUN_STATUS = { completed: ['Completed', 'ok'], failed: ['Failed', 'bad'], plan_only: ['Plan only', 'info'], running: ['Running', 'accent'], interrupted: ['Interrupted', 'warn'] };
+function runChip(s) { const [l, c] = RUN_STATUS[s] || [s || '–', '']; return h('span', { class: 'chip ' + c }, s === 'running' ? h('span', { class: 'spin', style: { width: '9px', height: '9px', borderWidth: '1.5px' } }) : h('i'), l); }
+
+/* ============================================================ small markdown renderer (DOM, never innerHTML) */
+function inlineMd(text, opt) {
+  const out = []; const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(!\[[^\]]*\]\([^)]+\))|(\[[^\]]+\]\([^)]+\))/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    if (m[1]) out.push(h('code', {}, t.slice(1, -1)));
+    else if (m[2]) out.push(h('strong', {}, t.slice(2, -2)));
+    else if (m[3]) { const mm = t.match(/!\[([^\]]*)\]\(([^)]+)\)/); out.push(h('img', { alt: mm[1], src: resolveHref(mm[2], opt), loading: 'lazy' })); }
+    else { const mm = t.match(/\[([^\]]+)\]\(([^)]+)\)/); out.push(h('a', { href: resolveHref(mm[2], opt), target: '_blank', rel: 'noopener' }, mm[1])); }
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function resolveHref(href, opt) {
+  href = decodeURIComponent(href.trim());
+  if (/^(https?:|data:|#)/i.test(href)) return href;
+  if (!opt || !opt.run) return '#';
+  const path = ((opt.base || '') + href).replace(/\/\.\//g, '/');
+  return fileUrl(opt.run, path);
+}
+function mdToDom(src, opt) {
+  const root = h('div', { class: 'md' }); const lines = src.replace(/\r/g, '').split('\n'); let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) { const buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++; root.append(h('pre', {}, h('code', {}, buf.join('\n')))); continue; }
+    const hm = l.match(/^(#{1,4})\s+(.*)/);
+    if (hm) { root.append(h('h' + hm[1].length, {}, ...inlineMd(hm[2], opt))); i++; continue; }
+    if (/^\s*\|.*\|\s*$/.test(l) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || '')) {
+      const cells = r => r.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+      const head = cells(l); i += 2; const body = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) body.push(cells(lines[i++]));
+      root.append(h('table', {}, h('thead', {}, h('tr', {}, head.map(c => h('th', {}, ...inlineMd(c, opt))))),
+        h('tbody', {}, body.map(r => h('tr', {}, r.map(c => h('td', {}, ...inlineMd(c, opt))))))));
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(l)) { const ul = h('ul'); while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) ul.append(h('li', {}, ...inlineMd(lines[i++].replace(/^\s*[-*]\s+/, ''), opt))); root.append(ul); continue; }
+    if (/^\s*\d+\.\s+/.test(l)) { const ol = h('ol'); while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) ol.append(h('li', {}, ...inlineMd(lines[i++].replace(/^\s*\d+\.\s+/, ''), opt))); root.append(ol); continue; }
+    if (/^>\s?/.test(l)) { const buf = []; while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, '')); root.append(h('blockquote', {}, ...inlineMd(buf.join(' '), opt))); continue; }
+    if (/^\s*(---|\*\*\*)\s*$/.test(l)) { root.append(h('hr')); i++; continue; }
+    if (!l.trim()) { i++; continue; }
+    const buf = [l]; i++;
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|\s*[-*]\s|\s*\d+\.\s|>|\s*\|)/.test(lines[i])) buf.push(lines[i++]);
+    root.append(h('p', {}, ...inlineMd(buf.join(' '), opt)));
+  }
+  return root;
+}
+
+/* ============================================================ API */
+const api = {
+  async j(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch { } const e = new Error(m); e.status = r.status; throw e; }
+    return r.json();
+  },
+  health: () => api.j('/api/health'),
+  env: (o) => api.j(`/api/env?mode=${o.mode}&reader=${o.reader}&plan_only=${o.plan_only}`),
+  runs: () => api.j('/api/runs'),
+  run: (s, r) => api.j(`/api/runs/${enc(s)}/${enc(r)}`),
+  tree: (s, r) => api.j(`/api/runs/${enc(s)}/${enc(r)}/tree`),
+  job: id => api.j(`/api/jobs/${id}`),
+  async text(run, path) { const r = await fetch(fileUrl(run, path)); if (!r.ok) throw new Error('not found'); return r.text(); },
+  start(file, o) { const f = new FormData(); f.append('pdf', file); f.append('mode', o.mode); f.append('reader', o.reader); f.append('plan_only', o.plan_only); return api.j('/api/runs', { method: 'POST', body: f }); },
+  resume: (run, o) => api.j('/api/runs/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: run.slug, run_id: run.run_id, ...o }) }),
+};
+const enc = encodeURIComponent;
+const fileUrl = (run, path, dl) => `/api/runs/${enc(run.slug)}/${enc(run.run_id)}/file?path=${enc(path)}${dl ? '&download=1' : ''}`;
+
+/* ============================================================ app state + router */
+const S = { health: null, offline: false, runs: [], runsRoot: '', env: null, envKey: '', file: null,
+            opts: { mode: 'kaggle', reader: 'marker', plan_only: false }, live: {}, theme: null, newErr: '' };
+let cleanup = null;   // called when the current view is left (timers, pollers)
+
+function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
+window.addEventListener('hashchange', route);
+
+function toast(msg) {
+  const t = h('div', { class: 'toast' }, msg); document.body.append(t); setTimeout(() => t.remove(), 3800);
+}
+
+function setTheme(t) {
+  S.theme = t; document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('pra-theme', t); } catch { }
+}
+(function initTheme() {
+  let t = null; try { t = localStorage.getItem('pra-theme'); } catch { }
+  setTheme(t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+})();
+
+/* ============================================================ shell */
+function sidebar() {
+  const active = S.health && S.health.active_job;
+  const here = location.hash || '#/new';
+  const navItem = (href, icon, label, extra, match) =>
+    h('a', { href, class: match(here) ? 'on' : '' }, ic(icon, 17), label, extra);
+  return h('aside', { class: 'side' },
+    h('div', { class: 'brand' }, h('div', { class: 'logo' }, ic('flask', 19)), h('div', {}, h('b', {}, 'Paper Report Agent'), h('span', {}, 'Reproducibility lab'))),
+    h('nav', { class: 'nav' },
+      navItem('#/new', 'plus', 'New run', null, x => x.startsWith('#/new') || x === '' || x === '#/'),
+      active ? navItem('#/live/' + active.id, 'zap', 'Live run', h('i', { class: 'pulse' }), x => x.startsWith('#/live')) : null,
+      navItem('#/runs', 'history', 'Runs', S.runs.length ? h('span', { class: 'count' }, S.runs.length) : null, x => x.startsWith('#/runs') || x.startsWith('#/run/'))),
+    h('div', { class: 'grow' }),
+    S.health ? h('div', { class: 'foot' }, h('b', {}, 'Output folder'), S.health.output_root) : null);
+}
+function refreshNav() { const el = $('.side'); if (el) el.replaceWith(sidebar()); }
+function shell(title, crumb, content) {
+  return h('div', { class: 'app' },
+    sidebar(),
+    h('div', { class: 'main' },
+      h('header', { class: 'top' },
+        crumb ? [h('span', { class: 'crumb' }, crumb), h('span', { class: 'crumb' }, '/')] : null,
+        h('h1', {}, title), h('div', { class: 'sp' }),
+        h('div', { class: 'conn ' + (S.offline ? 'bad' : S.health && S.health.demo ? 'demo' : 'ok'), title: S.offline ? 'Cannot reach the server' : '' },
+          h('i'), S.offline ? 'Server offline' : S.health && S.health.demo ? 'Demo mode (simulated)' : 'Connected'),
+        h('button', { class: 'iconbtn', title: 'Toggle theme', onclick: () => { setTheme(S.theme === 'dark' ? 'light' : 'dark'); } }, ic(S.theme === 'dark' ? 'sun' : 'moon', 17))),
+      h('main', { class: 'page' },
+        S.offline ? h('div', { class: 'banner bad' }, ic('alert'), 'Cannot reach the backend. Start it with ', h('code', {}, 'python -m ui.server'), ' (or add ', h('code', {}, '--demo'), ') and reload.') : null,
+        content)));
+}
+function render(title, crumb, content) {
+  mount($('#root'), shell(title, crumb, content));
+}
+
+async function refreshHealth() {
+  try { S.health = await api.health(); S.offline = false; } catch { S.offline = true; }
+}
+async function refreshRuns() {
+  try { const r = await api.runs(); S.runs = r.runs; S.runsRoot = r.output_root; } catch { }
+}
+
+async function route() {
+  if (cleanup) { try { cleanup(); } catch { } cleanup = null; }
+  window.scrollTo(0, 0);
+  const hash = location.hash || '#/new';
+  await Promise.all([refreshHealth(), refreshRuns()]);
+  const parts = hash.slice(2).split('/').map(decodeURIComponent);
+  if (parts[0] === 'live' && parts[1]) return viewLive(parts[1]);
+  if (parts[0] === 'runs') return viewRuns();
+  if (parts[0] === 'run' && parts[1] && parts[2]) return viewRun(parts[1], parts[2], parts[3] || 'overview');
+  return viewNew();
+}
+
+/* ============================================================ VIEW: new run */
+async function viewNew() {
+  const box = h('div');
+  render('New run', null, box);
+  let busy = false;
+  const opts = S.opts;
+
+  async function loadEnv() {
+    const key = JSON.stringify(opts);
+    if (S.envKey === key && S.env) return;
+    S.envKey = key; S.env = null; draw();
+    try { S.env = await api.env(opts); } catch (e) { S.env = [{ name: 'server', ok: false, fatal: true, detail: e.message }]; }
+    draw();
+  }
+  function seg(name, items) {
+    return h('div', { class: 'seg' }, items.map(([val, label, icon]) =>
+      h('button', { class: opts[name] === val ? 'on' : '', onclick: () => { opts[name] = val; loadEnv(); draw(); } }, icon ? ic(icon, 15) : null, label)));
+  }
+  function setFile(f) {
+    if (!f) return;
+    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { S.newErr = `${f.name} is not a PDF`; return draw(); }
+    S.file = f; S.newErr = ''; draw();
+  }
+  async function start() {
+    busy = true; S.newErr = ''; draw();
+    try { const job = await api.start(S.file, opts); S.file = null; go('#/live/' + job.id); }
+    catch (e) { busy = false; S.newErr = e.message; draw(); }
+  }
+  function draw() {
+    const fatal = (S.env || []).filter(c => !c.ok && c.fatal);
+    const ready = S.file && S.env && !fatal.length && !busy && !S.offline;
+    const input = h('input', { type: 'file', accept: 'application/pdf,.pdf', style: { display: 'none' }, onchange: e => setFile(e.target.files[0]) });
+    const drop = S.file
+      ? h('div', { class: 'file' }, h('div', { class: 'big' }, 'PDF'),
+        h('div', { style: { flex: 1, minWidth: 0 } }, h('b', { style: { wordBreak: 'break-all' } }, S.file.name), h('div', { class: 'muted small' }, fmtBytes(S.file.size))),
+        h('button', { class: 'btn sm', onclick: () => { S.file = null; draw(); } }, ic('x', 14), 'Remove'))
+      : h('div', { class: 'drop', onclick: () => input.click(),
+        ondragover: e => { e.preventDefault(); e.currentTarget.classList.add('over'); }, ondragleave: e => e.currentTarget.classList.remove('over'),
+        ondrop: e => { e.preventDefault(); setFile(e.dataTransfer.files[0]); } },
+        h('div', { class: 'big' }, ic('upload', 24)), h('h3', {}, 'Drop a paper PDF here'), h('div', { class: 'muted' }, 'or click to browse · the file stays on this machine'));
+
+    const act = S.health && S.health.active_job;
+    mount(box,
+      act ? h('div', { class: 'banner info' }, ic('zap'), `A run is already in progress (${act.filename}). `, h('a', { href: '#/live/' + act.id }, 'Watch it live'), ' — only one run can execute at a time.') : null,
+      h('div', { class: 'grid g2' },
+        h('div', { class: 'stack' },
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h2', {}, '1 · Paper'), h('span', { class: 'sub' }, 'PDF to reproduce')),
+            h('div', { class: 'card-b' }, drop, input)),
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h2', {}, '2 · Options')),
+            h('div', { class: 'card-b', style: { paddingTop: '4px', paddingBottom: '4px' } },
+              h('div', { class: 'opt' }, h('div', {}, h('b', {}, 'Execution'), h('p', {}, 'Where the reproduction runs')),
+                seg('mode', [['kaggle', 'Kaggle', 'cloud'], ['local', 'Local Docker', 'box']])),
+              h('div', { class: 'opt' }, h('div', {}, h('b', {}, 'PDF reader'), h('p', {}, 'PDF → markdown + figures')),
+                seg('reader', [['marker', 'Marker'], ['docling', 'Docling']])),
+              h('div', { class: 'opt' }, h('div', {}, h('b', {}, 'Plan only'), h('p', {}, 'Stop after the RunSpec; nothing is executed')),
+                h('div', {}, h('button', { class: 'switch' + (opts.plan_only ? ' on' : ''), role: 'switch', 'aria-checked': String(opts.plan_only),
+                  onclick: () => { opts.plan_only = !opts.plan_only; loadEnv(); draw(); } }))))),
+          S.newErr ? h('div', { class: 'banner bad' }, ic('alert'), S.newErr) : null,
+          h('div', { class: 'row' },
+            h('button', { class: 'btn primary lg', disabled: !ready, onclick: start }, busy ? h('span', { class: 'spin' }) : ic('play', 17), opts.plan_only ? 'Plan reproduction' : 'Start reproduction'),
+            !S.file ? h('span', { class: 'muted small' }, 'Choose a PDF to continue') : fatal.length ? h('span', { class: 'small', style: { color: 'var(--bad)' } }, `${fatal.length} requirement${fatal.length > 1 ? 's' : ''} missing`) : null)),
+        h('div', { class: 'stack' },
+          h('section', { class: 'card' },
+            h('div', { class: 'card-h' }, h('h2', {}, 'Environment'), h('div', { class: 'sp' }),
+              !S.env ? h('span', { class: 'spin faint' }) : fatal.length ? h('span', { class: 'chip bad' }, h('i'), 'Not ready') : h('span', { class: 'chip ok' }, h('i'), 'Ready')),
+            h('div', { class: 'card-b', style: { paddingTop: '8px', paddingBottom: '8px' } },
+              !S.env ? h('div', { class: 'muted small', style: { padding: '10px 0' } }, 'Checking…') :
+                S.env.map(c => h('div', { class: 'check' },
+                  h('div', { class: 'dot ' + (c.ok ? 'ok' : c.fatal ? 'bad' : 'warn') }, ic(c.ok ? 'check' : c.fatal ? 'x' : 'alert', 12, 3)),
+                  h('div', {}, h('b', {}, c.name), h('span', {}, c.detail)))))),
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h2', {}, 'What happens next')),
+            h('div', { class: 'card-b' }, h('div', { class: 'flow' },
+              [['Read the PDF', 'Marker or Docling converts it to markdown and figures'],
+               ['Extract claims', 'Gemini lists headline results, code repos and data links'],
+               ['Reproduce', 'Fetch the repo, plan a RunSpec, execute, then compare numbers by rule'],
+               ['Report', 'report.md and report.json, even if a stage fails']].map(([t, d], i) =>
+                h('div', {}, h('span', { class: 'n' }, i + 1), h('div', {}, h('b', {}, t), h('span', {}, d))))))))));
+  }
+  draw(); loadEnv();
+}
+
+/* ============================================================ live run: event store */
+const STAGES = [
+  { key: 'pdf', name: 'Read PDF', desc: 'Marker / Docling → markdown and figures', icon: 'file' },
+  { key: 'extract', name: 'Extract claims', desc: 'Gemini finds results, repos and data links', icon: 'search' },
+  { key: 'pipeline', name: 'Reproduce', desc: 'Fetch code, plan, execute, compare', icon: 'cpu' },
+  { key: 'report', name: 'Report', desc: 'report.md and report.json', icon: 'layers' },
+];
+const SUBSTEPS = [
+  { key: 'fetch', label: 'Fetch repo & data', re: /\[1\/5\]/ },
+  { key: 'resources', label: 'Probe machine', re: /Local machine:/, optional: true },
+  { key: 'plan', label: 'Plan RunSpec', re: /\[2\/5\]/ },
+  { key: 'feasible', label: 'Feasibility gate', re: /feasib|^\s*claim \d+: /i, optional: true },
+  { key: 'execute', label: 'Execute', re: /\[3\/5\]/ },
+  { key: 'compare', label: 'Compare to paper', re: /\[4\/5\]/ },
+  { key: 'writeup', label: 'Sandbox report', re: /\[5\/5\]/ },
+];
+function newLive() {
+  return { stages: Object.fromEntries(STAGES.map(s => [s.key, { status: 'pending' }])), preflight: [], logs: [], events: [],
+           subIdx: -1, subSeen: new Set(), runKey: null, status: 'running', result: null, startedAt: null, finishedAt: null,
+           error: null, trace: null, preflightFailed: null, ended: false, detail: null };
+}
+function applyEvent(L, ev) {
+  switch (ev.kind) {
+    case 'run': L.runKey = { slug: ev.slug, run_id: ev.run_id }; break;
+    case 'stage': {
+      const { stage, status, message } = ev;
+      if (stage === 'preflight') { L.preflight.push({ status, text: message }); }
+      else if (stage === 'run') { if (status === 'started') L.startedAt = ev.t; }
+      else if (L.stages[stage]) {
+        const st = L.stages[stage];
+        if (status === 'started') Object.assign(st, { status: 'running', t0: ev.t, message });
+        else if (status === 'done') Object.assign(st, { status: 'done', t1: ev.t, message });
+        else if (status === 'failed') Object.assign(st, { status: 'failed', t1: ev.t, message });
+        else if (status === 'reused') Object.assign(st, { status: 'reused', message });
+      }
+      if (stage !== 'preflight' || status !== 'ok') L.events.push({ t: ev.t, stage, status, message });
+      break;
+    }
+    case 'log': {
+      L.logs.push({ t: ev.t, line: ev.line, stream: ev.stream });
+      SUBSTEPS.forEach((s, i) => { if (s.re.test(ev.line)) { L.subSeen.add(s.key); if (i > L.subIdx) L.subIdx = i; } });
+      break;
+    }
+    case 'done': L.status = ev.status; L.result = ev; L.finishedAt = ev.t; break;
+    case 'error': L.status = 'failed'; L.error = ev.message; L.trace = ev.trace; L.finishedAt = ev.t; break;
+    case 'preflight_failed': L.status = 'failed'; L.preflightFailed = ev.checks; L.error = ev.message; L.finishedAt = ev.t; break;
+  }
+}
+function openLive(id) {
+  if (S.live[id]) return S.live[id];
+  const rec = S.live[id] = { id, L: newLive(), es: null, snap: null, onChange: null };
+  const es = rec.es = new EventSource(`/api/jobs/${encodeURIComponent(id)}/events`);
+  const handler = e => { const ev = JSON.parse(e.data); applyEvent(rec.L, ev); rec.onChange && rec.onChange(ev); };
+  ['stage', 'log', 'run', 'done', 'error', 'preflight_failed'].forEach(k => es.addEventListener(k, handler));
+  es.addEventListener('end', e => {
+    try { rec.snap = JSON.parse(e.data); } catch { }
+    rec.L.ended = true; es.close();
+    rec.onChange && rec.onChange({ kind: 'end' });
+    refreshHealth().then(refreshRuns).then(refreshNav);
+  });
+  return rec;
+}
+function logClass(l) {
+  if (/\[\d\/5\]/.test(l)) return 'hl';
+  if (/traceback|exception|\berror\b|\bfailed\b|\[x\]|\[!\]/i.test(l)) return 'err';
+  if (/warn/i.test(l)) return 'warn';
+  if (/^\s*\[step /.test(l)) return 'step';
+  return '';
+}
+
+/* ============================================================ VIEW: live run */
+async function viewLive(id) {
+  let snap;
+  try { snap = await api.job(id); }
+  catch (e) {
+    return render('Live run', null, h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('alert', 30), h('div', {}, 'This job is not known to the server (it may have been restarted).'),
+      h('div', { style: { marginTop: '14px' } }, h('a', { class: 'btn', href: '#/runs' }, 'Open run history')))));
+  }
+  const rec = openLive(id); rec.snap = rec.snap || snap; const L = rec.L;
+  let filter = '', auto = true, rendered = 0, pollT = null, tick = null, detailKey = '', raf = 0;
+
+  const elHead = h('div'), elRail = h('div'), elSubs = h('div'), elTl = h('div', { class: 'tl' }), elSide = h('div', { class: 'stack' });
+  const cons = h('div', { class: 'console' });
+  const filterIn = h('input', { placeholder: 'Filter log…', oninput: e => { filter = e.target.value.toLowerCase(); rendered = 0; cons.replaceChildren(); appendLogs(); } });
+  const autoBtn = h('button', { class: 'btn sm', onclick: () => { auto = !auto; autoBtn.classList.toggle('primary', auto); if (auto) cons.scrollTop = cons.scrollHeight; } }, 'Follow');
+  autoBtn.classList.add('primary');
+  cons.addEventListener('scroll', () => { const near = cons.scrollHeight - cons.scrollTop - cons.clientHeight < 30; if (!near && auto) { auto = false; autoBtn.classList.remove('primary'); } });
+
+  const body = h('div', { class: 'stack' }, elHead, elRail,
+    h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Reproduce stage'), h('span', { class: 'sub' }, 'sub-steps detected from the pipeline output')), h('div', { class: 'card-b' }, elSubs)),
+    h('div', { class: 'grid g2' },
+      h('section', { class: 'card', style: { minWidth: 0 } },
+        h('div', { class: 'card-h' }, ic('terminal', 16), h('h3', {}, 'Live output'), h('div', { class: 'sp' }),
+          h('label', { class: 'search' }, ic('search', 14), filterIn), autoBtn,
+          h('button', { class: 'btn sm', title: 'Download log', onclick: dlLog }, ic('download', 14))), cons),
+      h('div', { class: 'stack', style: { minWidth: 0 } },
+        h('section', { class: 'card' }, h('div', { class: 'card-h' }, ic('list', 16), h('h3', {}, 'Activity')), elTl), elSide)));
+  render(snap.filename, 'Live run', body);
+
+  function dlLog() {
+    const txt = L.logs.map(x => `${clock(x.t)} ${x.line}`).join('\n');
+    const a = h('a', { href: URL.createObjectURL(new Blob([txt], { type: 'text/plain' })), download: `${snap.filename}-live.log` }); a.click();
+  }
+  function appendLogs() {
+    const frag = document.createDocumentFragment();
+    for (; rendered < L.logs.length; rendered++) {
+      const x = L.logs[rendered];
+      if (filter && !x.line.toLowerCase().includes(filter)) continue;
+      frag.append(h('div', { class: 'ln' }, h('span', { class: 'ts' }, clock(x.t)), h('span', { class: logClass(x.line) + (x.stream === 'err' && !logClass(x.line) ? ' dim' : '') }, x.line)));
+    }
+    if (!cons.children.length && !frag.childNodes.length && !L.logs.length) cons.replaceChildren(h('div', { class: 'none' }, 'Waiting for output…'));
+    else if (frag.childNodes.length) { if (cons.firstChild && cons.firstChild.classList.contains('none')) cons.replaceChildren(); cons.append(frag); }
+    while (cons.children.length > 3000) cons.removeChild(cons.firstChild);
+    if (auto) cons.scrollTop = cons.scrollHeight;
+  }
+  const elapsed = () => ((L.finishedAt || Date.now() / 1000) - (L.startedAt || snap.created));
+  function paint() {
+    raf = 0;
+    const o = snap.options || {};
+    const running = L.status === 'running';
+    const failedPre = L.preflightFailed;
+    mount(elHead,
+      h('section', { class: 'card' }, h('div', { class: 'card-b' }, h('div', { class: 'hero' },
+        h('div', { style: { flex: 1, minWidth: 260 } },
+          h('div', { class: 'row', style: { marginBottom: '8px' } },
+            running ? h('span', { class: 'chip accent' }, h('span', { class: 'spin', style: { width: '9px', height: '9px', borderWidth: '1.5px' } }), 'Running') : runChip(L.status),
+            h('span', { class: 'chip' }, ic(o.mode === 'local' ? 'box' : 'cloud', 12), o.mode === 'local' ? 'Local Docker' : 'Kaggle'),
+            h('span', { class: 'chip' }, o.reader || 'marker'), o.plan_only ? h('span', { class: 'chip info' }, 'Plan only') : null,
+            h('span', { class: 'chip' }, ic('clock', 12), h('span', { class: 'el', 'data-live': running ? '1' : null }, fmtDur(elapsed())))),
+          h('h2', {}, L.result ? L.result.headline : failedPre ? 'Preflight failed' : L.error ? 'Run failed' : 'Reproducing…'),
+          h('div', { class: 'muted small' }, L.runKey ? [h('span', { class: 'mono' }, `${L.runKey.slug}/${L.runKey.run_id}`)] : 'Preparing run folder…')),
+        !running && L.runKey ? h('a', { class: 'btn primary', href: `#/run/${enc(L.runKey.slug)}/${enc(L.runKey.run_id)}/overview` }, 'Open report', ic('chev', 15)) : null))),
+      failedPre ? h('div', { class: 'banner bad', style: { marginTop: '18px', alignItems: 'flex-start' } }, ic('alert'),
+        h('div', {}, h('b', {}, 'Nothing was started. Fix these and try again:'), h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px' } },
+          failedPre.filter(c => c.fatal && !c.ok).map(c => h('li', {}, h('b', {}, c.name), ': ', c.detail))))) : null,
+      !failedPre && L.error && !L.result ? h('div', { class: 'banner bad', style: { marginTop: '18px', alignItems: 'flex-start' } }, ic('alert'),
+        h('div', {}, h('b', {}, L.error), L.trace ? h('pre', { class: 'codebox', style: { marginTop: '8px', maxHeight: '180px' } }, L.trace) : null)) : null);
+
+    mount(elRail, h('div', { class: 'rail' }, STAGES.map(s => {
+      const st = L.stages[s.key];
+      const dur = st.t0 && st.t1 ? st.t1 - st.t0 : null;
+      const label = { pending: 'Waiting', running: 'Running', done: 'Done', failed: 'Failed', reused: 'Reused from earlier run' }[st.status];
+      return h('div', { class: 'stage ' + st.status },
+        h('div', { class: 'top2' }, h('div', { class: 'badge' }, st.status === 'running' ? h('span', { class: 'spin' }) : st.status === 'done' ? ic('check', 17, 3) : st.status === 'failed' ? ic('x', 17, 3) : ic(s.icon, 17)), h('h4', {}, s.name)),
+        h('p', {}, s.desc),
+        h('div', { class: 'st' }, label, st.status === 'running' ? h('span', { class: 'el mono', 'data-t0': st.t0 }, fmtDur(Date.now() / 1000 - st.t0)) : dur != null ? h('span', { class: 'mono faint' }, fmtDur(dur)) : null),
+        st.message && st.status !== 'running' ? h('div', { class: 'msg' }, st.message) : null);
+    })));
+
+    const idx = L.stages.pipeline.status === 'done' ? SUBSTEPS.length : L.subIdx;
+    mount(elSubs, h('div', { class: 'subs' }, SUBSTEPS.map((s, i) => {
+      const seen = L.subSeen.has(s.key); let cls = '';
+      if (i < idx && (seen || !s.optional)) cls = 'done'; else if (i < idx && s.optional && !seen) cls = 'skip';
+      else if (i === idx && L.stages.pipeline.status === 'running') cls = 'active';
+      else if (i === idx) cls = 'done';
+      return h('span', { class: 'sstep ' + cls }, cls === 'done' ? ic('check', 13, 3) : cls === 'active' ? h('span', { class: 'spin', style: { width: '11px', height: '11px' } }) : cls === 'skip' ? ic('skip', 12) : null, s.label);
+    })));
+
+    const evs = L.events.slice().reverse();
+    mount(elTl, evs.length ? evs.map(e => h('div', {}, h('time', {}, clock(e.t)),
+      h('div', { style: { minWidth: 0 } }, h('b', {}, e.stage), ' ', h('span', { class: e.status === 'failed' ? '' : 'muted', style: e.status === 'failed' ? { color: 'var(--bad)' } : null }, e.status), e.message ? h('div', { class: 'muted', style: { wordBreak: 'break-word' } }, e.message) : null)))
+      : h('div', { class: 'empty small' }, 'No events yet'));
+    paintSide(); appendLogs();
+  }
+  function paintSide() {
+    const d = L.detail; const kids = [];
+    if (d && d.extraction && d.extraction.main_results) {
+      const rows = (d.comparison_rows || (d.report && d.report.claims)) || [];
+      const stat = i => (rows[i] && (rows[i].status)) || null;
+      kids.push(h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Claims'), h('span', { class: 'sub' }, `${d.extraction.main_results.length} extracted`)),
+        h('div', { class: 'tw' }, h('table', { class: 't' }, h('tbody', {}, d.extraction.main_results.map((c, i) => h('tr', {},
+          h('td', { class: 'num faint' }, i + 1), h('td', {}, h('div', { class: 'clamp', title: tex(c.claim) }, tex(c.metric) || '–'), h('div', { class: 'tiny faint' }, tex(c.system_or_dataset || ''))),
+          h('td', { class: 'num' }, tex(c.value)), h('td', {}, stat(i) ? statusChip(stat(i)) : h('span', { class: 'chip' }, 'pending')))))))));
+    }
+    if (d && d.run_spec) {
+      const sp = d.run_spec;
+      kids.push(h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Planned steps'), h('span', { class: 'sub' }, `GPU ${sp.hardware ? sp.hardware.gpu : '?'}`)),
+        h('div', { class: 'card-b', style: { paddingTop: '8px', paddingBottom: '8px' } }, sp.steps.map(s => h('div', { style: { padding: '7px 0', borderBottom: '1px solid var(--line2)' } },
+          h('div', { class: 'row' }, h('b', { class: 'mono small' }, s.id), s.gpu ? h('span', { class: 'chip violet' }, 'GPU') : null, h('span', { class: 'chip' }, `${s.timeout_min} min cap`)),
+          h('div', { class: 'mono tiny muted', style: { wordBreak: 'break-all', marginTop: '3px' } }, s.command))))));
+    }
+    mount(elSide, kids);
+  }
+  async function pollDetail() {
+    if (!L.runKey) return;
+    try {
+      const d = await api.run(L.runKey.slug, L.runKey.run_id);
+      const key = JSON.stringify([!!d.extraction, !!d.run_spec, !!d.comparison_rows, !!d.report, d.manifest && d.manifest.updated]);
+      if (key !== detailKey) { detailKey = key; L.detail = d; paintSide(); }
+    } catch { }
+  }
+  rec.onChange = ev => {
+    if (ev.kind === 'log' && !raf) { raf = requestAnimationFrame(() => { raf = 0; appendLogs(); updateRail(); }); return; }
+    if (!raf) raf = requestAnimationFrame(paint);
+    if (ev.kind === 'end') pollDetail();
+  };
+  function updateRail() {   // cheap: only substeps change when logs arrive
+    const before = L.subIdx; if (before !== updateRail.last) { updateRail.last = before; paint(); }
+  }
+  updateRail.last = L.subIdx;
+  paint();
+  tick = setInterval(() => {
+    document.querySelectorAll('.el[data-t0]').forEach(e => { e.textContent = fmtDur(Date.now() / 1000 - parseFloat(e.dataset.t0)); });
+    document.querySelectorAll('.el[data-live]').forEach(e => { e.textContent = fmtDur(elapsed()); });
+  }, 1000);
+  pollT = setInterval(pollDetail, 2500); pollDetail();
+  cleanup = () => { clearInterval(tick); clearInterval(pollT); if (raf) cancelAnimationFrame(raf); rec.onChange = null; };
+}
+
+/* ============================================================ VIEW: run history */
+function viewRuns() {
+  let q = '', st = 'all', timer = null;
+  const box = h('div');
+  render('Runs', null, box);
+  function scoreCell(r) {
+    if (r.total == null) return h('span', { class: 'faint' }, '–');
+    const pct = r.total ? r.reproduced / r.total * 100 : 0;
+    return h('div', { style: { minWidth: '130px' } }, h('div', { class: 'row', style: { gap: '8px', justifyContent: 'space-between' } }, h('b', { class: 'num' }, `${r.reproduced}/${r.total}`), h('span', { class: 'faint tiny num' }, Math.round(pct) + '%')),
+      h('div', { class: 'bar', style: { marginTop: '5px' } }, h('i', { style: { width: pct + '%', background: 'var(--ok)' } })));
+  }
+  function draw() {
+    const rows = S.runs.filter(r => (st === 'all' || r.status === st) && (!q || `${r.title} ${r.pdf} ${r.slug}`.toLowerCase().includes(q)));
+    const statuses = ['all', ...new Set(S.runs.map(r => r.status))];
+    mount(box,
+      h('div', { class: 'row', style: { marginBottom: '16px', justifyContent: 'space-between' } },
+        h('div', { class: 'row' }, h('label', { class: 'search' }, ic('search', 14), h('input', { placeholder: 'Search papers…', value: q, oninput: e => { q = e.target.value.toLowerCase(); draw(); e.target.focus(); } })),
+          h('div', { class: 'filters' }, statuses.map(s => h('button', { class: st === s ? 'on' : '', onclick: () => { st = s; draw(); } }, s === 'all' ? 'All' : (RUN_STATUS[s] || [s])[0])))),
+        h('a', { class: 'btn primary', href: '#/new' }, ic('plus', 15), 'New run')),
+      h('section', { class: 'card' }, rows.length ? h('div', { class: 'tw' }, h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, ['Paper', 'Status', 'Reproduced', 'Mode', 'Started', 'Duration'].map(x => h('th', {}, x)))),
+        h('tbody', {}, rows.map(r => h('tr', { class: 'click', onclick: () => go(`#/run/${enc(r.slug)}/${enc(r.run_id)}/overview`) },
+          h('td', { style: { maxWidth: '420px' } }, h('div', { class: 'clamp', style: { fontWeight: 600 } }, tex(r.title) || r.pdf), h('div', { class: 'tiny faint mono' }, `${r.slug} · ${r.run_id}`)),
+          h('td', {}, runChip(r.status)), h('td', {}, scoreCell(r)),
+          h('td', {}, h('span', { class: 'chip' }, r.mode === 'local' ? 'Local' : 'Kaggle')),
+          h('td', { class: 'muted num' }, relTime(r.created)), h('td', { class: 'muted num' }, r.finished ? fmtDur(durBetween(r.created, r.finished)) : r.status === 'running' ? 'running…' : '–'))))))
+        : h('div', { class: 'empty' }, ic('history', 32), h('div', {}, S.runs.length ? 'No runs match the filter.' : 'No runs yet. Start one from “New run”.'))));
+  }
+  draw();
+  timer = setInterval(async () => { await refreshRuns(); if (!document.activeElement || document.activeElement.tagName !== 'INPUT') draw(); }, 4000);
+  cleanup = () => clearInterval(timer);
+}
+
+/* ============================================================ VIEW: run report */
+const TABS = [['overview', 'Overview', 'layers'], ['claims', 'Claims', 'check'], ['execution', 'Execution', 'terminal'], ['plan', 'Plan', 'git'],
+              ['paper', 'Paper', 'file'], ['report', 'Report', 'list'], ['files', 'Files', 'folder']];
+
+async function viewRun(slug, runId, tab) {
+  let d;
+  try { d = await api.run(slug, runId); }
+  catch (e) { return render('Run', 'Runs', h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('alert', 30), h('div', {}, 'Run not found.'), h('div', { style: { marginTop: '14px' } }, h('a', { class: 'btn', href: '#/runs' }, 'Back to runs'))))); }
+  const run = { slug, run_id: runId };
+  const m = d.manifest || {}, rep = d.report, claims = rep ? rep.claims : [];
+  const title = tex((rep && rep.paper.title) || m.paper_title || (m.input && m.input.name) || slug);
+  const running = m.status === 'running';
+  const act = S.health && S.health.active_job;
+  const live = act && act.run && act.run.slug === slug && act.run.run_id === runId ? act : null;
+  let poll = null;
+
+  const content = h('div'); const tabBody = h('div');
+  const pct = rep && rep.summary.claims_total ? rep.summary.reproduced / rep.summary.claims_total * 100 : 0;
+  const R = 52, C = 2 * Math.PI * R;
+  const ring = h('div', { class: 'ring' });
+  ring.innerHTML = `<svg width="118" height="118" viewBox="0 0 118 118"><circle cx="59" cy="59" r="${R}" fill="none" stroke="var(--gray-bg)" stroke-width="10"/><circle cx="59" cy="59" r="${R}" fill="none" stroke="${pct >= 70 ? 'var(--ok)' : pct >= 40 ? 'var(--warn)' : 'var(--bad)'}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(C * pct / 100).toFixed(1)} ${C.toFixed(1)}"/></svg>`;
+  ring.append(h('div', { class: 'c' }, h('div', {}, h('b', {}, rep && rep.summary.claims_total ? `${rep.summary.reproduced}/${rep.summary.claims_total}` : '–'), h('br'), h('span', {}, 'reproduced'))));
+
+  async function rerun(planOnly) {
+    try { const job = await api.resume(run, { plan_only: !!planOnly }); go('#/live/' + job.id); }
+    catch (e) { toast(e.message); }
+  }
+  const header = h('section', { class: 'card' }, h('div', { class: 'card-b' }, h('div', { class: 'hero' },
+    rep ? ring : null,
+    h('div', { style: { flex: 1, minWidth: 280 } },
+      h('div', { class: 'row', style: { marginBottom: '8px' } }, runChip(m.status), h('span', { class: 'chip' }, ic((m.options || {}).mode === 'local' ? 'box' : 'cloud', 12), (m.options || {}).mode === 'local' ? 'Local Docker' : 'Kaggle'),
+        h('span', { class: 'chip' }, (m.options || {}).reader || ''), (m.options || {}).plan_only ? h('span', { class: 'chip info' }, 'Plan only') : null,
+        rep && rep.repo ? h('a', { class: 'chip accent', href: rep.repo.url, target: '_blank', rel: 'noopener', style: { textDecoration: 'none' } }, ic('git', 12), rep.repo.url.replace('https://github.com/', ''), rep.repo.commit ? ' @ ' + shortSha(rep.repo.commit) : '') : null),
+      h('h2', { style: { fontSize: '19px' } }, title),
+      h('div', { class: 'muted' }, rep ? rep.headline : running ? 'Run in progress…' : '')),
+    h('div', { class: 'row' },
+      live ? h('a', { class: 'btn primary', href: '#/live/' + live.id }, ic('zap', 15), 'Watch live') : null,
+      !running ? h('button', { class: 'btn', title: 'Redo planning, execution and the report; reuse the PDF conversion and extraction', onclick: () => rerun(false) }, ic('refresh', 15), 'Re-run') : null,
+      d.has_report_md ? h('a', { class: 'btn', href: fileUrl(run, 'report.md', true) }, ic('download', 15), 'report.md') : null))));
+  const tabs = h('nav', { class: 'tabs' }, TABS.map(([k, l, i]) => h('a', { href: `#/run/${enc(slug)}/${enc(runId)}/${k}`, class: tab === k ? 'on' : '' }, ic(i, 15), l,
+    k === 'claims' && claims.length ? h('span', { class: 'n' }, claims.length) : k === 'execution' && rep && rep.execution_steps.length ? h('span', { class: 'n' }, rep.execution_steps.length) : null)));
+
+  mount(content,
+    running ? h('div', { class: 'banner info' }, ic('zap'), 'This run is still in progress. ', live ? h('a', { href: '#/live/' + live.id }, 'Watch it live') : 'Data refreshes automatically.') : null,
+    rep && rep.run.status === 'failed' ? h('div', { class: 'banner bad', style: { alignItems: 'flex-start' } }, ic('alert'), h('div', {}, h('b', {}, `Failed at stage “${rep.run.failed_stage}”`), h('div', { style: { wordBreak: 'break-word' } }, rep.run.error))) : null,
+    header, tabs, tabBody);
+  render('Report', 'Runs', content);
+  renderTab(tab);
+  if (running) { poll = setInterval(async () => { const n = await api.run(slug, runId).catch(() => null); if (n && n.manifest && n.manifest.status !== 'running') { clearInterval(poll); route(); } }, 3000); }
+  cleanup = () => clearInterval(poll);
+
+  function renderTab(t) {
+    const fn = { overview: tOverview, claims: tClaims, execution: tExecution, plan: tPlan, paper: tPaper, report: tReport, files: tFiles }[t] || tOverview;
+    mount(tabBody, fn());
+  }
+
+  /* ---- overview */
+  function tOverview() {
+    if (!rep) return h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('info', 30), 'No report yet for this run.'));
+    const sm = rep.summary, steps = rep.execution_steps || [];
+    const execSec = steps.reduce((a, s) => a + (s.seconds || 0), 0), okSteps = steps.filter(s => s.rc === 0).length;
+    const unverified = claims.filter(c => c.value_verified_in_paper_text === false).length;
+    const kpi = (v, l, sub) => h('div', { class: 'card kpi' }, h('div', { class: 'v' }, v), h('div', { class: 'l' }, l), sub ? h('div', { class: 'tiny faint', style: { marginTop: '6px' } }, sub) : null);
+    const stages = Object.entries(m.stages || {});
+    const maxd = Math.max(1, ...stages.map(([, s]) => s.duration_s || 0));
+    const ex = d.extraction || {};
+    const planner = claims.filter(c => c.planner_status && c.planner_status !== 'mapped');
+    return h('div', { class: 'stack' },
+      h('div', { class: 'grid g4' },
+        kpi(sm.percent_reproduced != null ? sm.percent_reproduced + '%' : '–', 'Claims reproduced', `${sm.reproduced} of ${sm.claims_total}`),
+        kpi(unverified ? `${claims.length - unverified}/${claims.length}` : claims.length ? 'All' : '–', 'Values found verbatim in the paper', unverified ? `${unverified} not found: check the extraction` : 'extraction cross-checked'),
+        kpi(steps.length ? `${okSteps}/${steps.length}` : '–', 'Execution steps exited 0', steps.length ? fmtDur(execSec) + ' of compute' : 'nothing executed'),
+        kpi(m.finished ? fmtDur(durBetween(m.created, m.finished)) : '…', 'Total wall time', rep.hardware ? `GPU ${rep.hardware.gpu}` : null)),
+      h('div', { class: 'grid g2' },
+        h('div', { class: 'stack' },
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Outcome by claim')),
+            h('div', { class: 'card-b' },
+              h('div', { class: 'bar', style: { height: '12px', marginBottom: '16px' } }, Object.entries(sm.by_status).map(([k, n]) => h('i', { title: `${STATUS[k] ? STATUS[k][0] : k}: ${n}`, style: { width: (n / sm.claims_total * 100) + '%', background: STATUS_COLOR[k] || 'var(--faint)' } }))),
+              h('div', { class: 'grid g2e', style: { gap: '8px 24px' } }, Object.entries(sm.by_status).map(([k, n]) => h('div', { class: 'row', style: { justifyContent: 'space-between' } }, statusChip(k), h('b', { class: 'num' }, n)))))),
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Stage timings')),
+            h('div', { class: 'card-b' }, stages.map(([k, s]) => h('div', { style: { marginBottom: '12px' } },
+              h('div', { class: 'row', style: { justifyContent: 'space-between', marginBottom: '5px' } }, h('span', { style: { fontWeight: 600 } }, (STAGES.find(x => x.key === k) || { name: k }).name),
+                h('span', { class: 'small muted' }, s.reused ? 'reused' : s.status === 'done' ? fmtDur(s.duration_s) : s.status, s.summary ? ` · ${s.summary}` : '')),
+              h('div', { class: 'bar' }, h('i', { style: { width: Math.max(2, (s.duration_s || 0) / maxd * 100) + '%', background: s.status === 'failed' ? 'var(--bad)' : s.reused ? 'var(--info)' : 'var(--accent)' } })))))),
+          planner.length ? h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Not reproducible / not attempted'), h('span', { class: 'sub' }, planner.length)),
+            h('div', { class: 'card-b' }, planner.map(c => h('div', { style: { padding: '6px 0' } }, h('b', {}, `#${c.index} `), h('span', { class: 'muted' }, c.planner_reason || c.planner_status))))) : null,
+          rep.warnings.length ? h('section', { class: 'card' }, h('div', { class: 'card-h' }, ic('alert', 15), h('h3', {}, 'Warnings')),
+            h('div', { class: 'card-b' }, rep.warnings.map(w => h('div', { class: 'banner warn', style: { marginBottom: '8px' } }, w)))) : null),
+        h('div', { class: 'stack' },
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Run details')),
+            h('div', { class: 'card-b' }, h('dl', { class: 'kv' },
+              h('dt', {}, 'PDF'), h('dd', {}, rep.paper.pdf.split('/').pop()), h('dt', {}, 'SHA-256'), h('dd', { class: 'mono small' }, shortSha(rep.paper.sha256) + '…'),
+              h('dt', {}, 'Run ID'), h('dd', { class: 'mono small' }, rep.run.id), h('dt', {}, 'Started'), h('dd', {}, new Date(rep.run.created).toLocaleString()),
+              h('dt', {}, 'Outcome'), h('dd', {}, rep.run.reproduction_outcome), h('dt', {}, 'Execution'), h('dd', {}, rep.run.mode || '–'),
+              rep.hardware ? [h('dt', {}, 'Hardware'), h('dd', {}, `GPU ${rep.hardware.gpu}`, rep.hardware.est_runtime_min ? ` · ~${rep.hardware.est_runtime_min} min` : '', rep.hardware.min_vram_gb ? ` · ≥${rep.hardware.min_vram_gb} GB VRAM` : '', h('div', { class: 'muted small' }, rep.hardware.reason))] : null))),
+          h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Sources found in the paper')),
+            h('div', { class: 'card-b' },
+              (ex.code_repos || []).map(r => h('div', { class: 'row', style: { marginBottom: '8px', flexWrap: 'nowrap', alignItems: 'flex-start' } }, ic('git', 14), h('a', { href: r.url, target: '_blank', rel: 'noopener', style: { wordBreak: 'break-all', flex: 1, minWidth: 0 } }, r.url), h('span', { class: 'chip ' + (r.verified ? 'ok' : 'warn') }, r.verified ? 'verified' : 'unverified'))),
+              (ex.data_links || []).filter(x => !(ex.code_repos || []).some(r => r.url === x.url)).map(r => h('div', { class: 'row', style: { marginBottom: '8px', flexWrap: 'nowrap', alignItems: 'flex-start' } }, ic('link', 14), h('a', { href: r.url, target: '_blank', rel: 'noopener', style: { wordBreak: 'break-all', flex: 1, minWidth: 0 } }, r.url), h('span', { class: 'chip' }, r.note || 'data'))),
+              ex.availability_statement ? h('p', { class: 'muted small', style: { margin: '10px 0 0' } }, ex.availability_statement) : null,
+              !(ex.code_repos || []).length && !(ex.data_links || []).length ? h('div', { class: 'muted small' }, 'No repositories or data links were found.') : null)))));
+  }
+
+  /* ---- claims */
+  function tClaims() {
+    if (!claims.length) return h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('search', 30), 'No claims were extracted.'));
+    let f = 'all', q = ''; const open = new Set(); const box = h('div');
+    const counts = {}; claims.forEach(c => counts[c.status] = (counts[c.status] || 0) + 1);
+    function draw() {
+      const rows = claims.filter(c => (f === 'all' || c.status === f) && (!q || (`${c.claim} ${c.metric} ${c.system_or_dataset}`).toLowerCase().includes(q)));
+      mount(box,
+        h('div', { class: 'row', style: { marginBottom: '14px', justifyContent: 'space-between' } },
+          h('div', { class: 'filters' }, h('button', { class: f === 'all' ? 'on' : '', onclick: () => { f = 'all'; draw(); } }, `All ${claims.length}`),
+            Object.entries(counts).map(([k, n]) => h('button', { class: f === k ? 'on' : '', onclick: () => { f = k; draw(); } }, `${STATUS[k] ? STATUS[k][0] : k} ${n}`))),
+          h('label', { class: 'search' }, ic('search', 14), h('input', { placeholder: 'Search claims…', value: q, oninput: e => { q = e.target.value.toLowerCase(); draw(); const i = $('input', box); i.focus(); i.setSelectionRange(q.length, q.length); } }))),
+        h('section', { class: 'card' }, h('div', { class: 'tw' }, h('table', { class: 't' },
+          h('thead', {}, h('tr', {}, ['#', 'Claim', 'Metric', 'Paper', 'Reproduced', 'Δ', 'Status'].map(x => h('th', {}, x)))),
+          h('tbody', {}, rows.length ? rows.map(c => {
+            const dl = delta(c.paper_value, c.reproduced_value), isOpen = open.has(c.index);
+            return [h('tr', { class: 'click', onclick: () => { isOpen ? open.delete(c.index) : open.add(c.index); draw(); } },
+              h('td', { class: 'num faint' }, h('span', { style: { display: 'inline-block', transform: isOpen ? 'rotate(90deg)' : '', transition: '.12s', marginRight: '6px' } }, ic('chev', 12)), c.index),
+              h('td', { style: { maxWidth: '460px' } }, h('div', { class: isOpen ? '' : 'clamp' }, tex(c.claim))),
+              h('td', {}, tex(c.metric)), h('td', { class: 'num' }, tex(c.paper_value), c.value_verified_in_paper_text === false ? h('span', { title: 'Value not found verbatim in the paper text', style: { color: 'var(--warn)', marginLeft: '5px' } }, ic('alert', 13)) : null),
+              h('td', { class: 'num', style: { fontWeight: 600 } }, c.reproduced_value == null ? h('span', { class: 'faint' }, '–') : String(c.reproduced_value)),
+              h('td', { class: 'num ' + (dl == null ? 'faint' : dl <= 3 ? '' : 'muted') }, dl == null ? '–' : (dl < 0.1 ? '<0.1' : dl.toFixed(1)) + '%'),
+              h('td', {}, statusChip(c.status))),
+            isOpen ? h('tr', { class: 'dets' }, h('td', { colspan: 7 }, h('div', { class: 'det' },
+              h('div', {}, h('h5', {}, 'Dataset / system'), c.system_or_dataset || '–', h('h5', { style: { marginTop: '14px' } }, 'Source'), c.source || '–'),
+              h('div', {}, h('h5', {}, 'Matched output line'), c.matched_output_line ? h('div', { class: 'codebox' }, c.matched_output_line) : h('span', { class: 'faint' }, 'none'),
+                c.match_reasoning ? [h('h5', { style: { marginTop: '14px' } }, 'Matching note'), h('div', { class: 'muted' }, c.match_reasoning)] : null),
+              h('div', {}, h('h5', {}, 'Planner'), h('div', {}, c.planner_status || '–', c.planner_reason ? ` — ${c.planner_reason}` : ''),
+                (c.planner_steps || []).length ? h('div', { class: 'row', style: { marginTop: '8px' } }, c.planner_steps.map(s => h('span', { class: 'chip mono' }, s))) : null),
+              c.value_verified_in_paper_text === false ? h('div', {}, h('div', { class: 'banner warn' }, ic('alert'), 'The extracted value was not found verbatim in the paper text. Check it against the PDF before trusting the verdict.')) : null))) : null];
+          }) : h('tr', {}, h('td', { colspan: 7 }, h('div', { class: 'empty small' }, 'No claims match.'))))))));
+    }
+    draw(); return box;
+  }
+
+  /* ---- execution */
+  function tExecution() {
+    const steps = (rep && rep.execution_steps) || [], spec = d.run_spec; const sById = Object.fromEntries(((spec && spec.steps) || []).map(s => [s.id, s]));
+    const maxs = Math.max(1, ...steps.map(s => s.seconds || 0));
+    return h('div', { class: 'stack' },
+      h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Executed steps'), h('span', { class: 'sub' }, steps.length ? `${steps.length} steps` : '')),
+        steps.length ? h('div', { class: 'tw' }, h('table', { class: 't' }, h('thead', {}, h('tr', {}, ['Step', 'Command', 'Exit', 'Time', 'Cap'].map(x => h('th', {}, x)))),
+          h('tbody', {}, steps.map(s => { const sp = sById[s.id]; return h('tr', {},
+            h('td', {}, h('b', { class: 'mono small' }, s.id), sp && sp.gpu ? h('span', { class: 'chip violet', style: { marginLeft: '8px' } }, 'GPU') : null),
+            h('td', {}, h('div', { class: 'codebox', style: { padding: '5px 9px' } }, s.command)),
+            h('td', {}, h('span', { class: 'chip ' + (s.rc === 0 ? 'ok' : 'bad') }, h('i'), 'exit ' + s.rc)),
+            h('td', { style: { minWidth: '150px' } }, h('div', { class: 'num small' }, fmtDur(s.seconds)), h('div', { class: 'bar', style: { marginTop: '4px' } }, h('i', { style: { width: ((s.seconds || 0) / maxs * 100) + '%', background: s.rc === 0 ? 'var(--accent)' : 'var(--bad)' } }))),
+            h('td', { class: 'muted num' }, sp ? sp.timeout_min + ' min' : '–')); })))) :
+          h('div', { class: 'empty' }, ic('terminal', 30), h('div', {}, (m.options || {}).plan_only ? 'Plan-only run: nothing was executed.' : 'No steps were executed in this run.'))),
+      h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Raw outputs')),
+        h('div', { class: 'card-b row' },
+          [['04_execution/execution_results.json', 'execution_results.json'], ['04_execution/comparison_rows.json', 'comparison_rows.json'], ['04_execution/phase2.md', 'phase2.md']].map(([p, l]) =>
+            h('a', { class: 'btn sm', href: fileUrl(run, p), target: '_blank' }, ic('ext', 13), l)), h('a', { class: 'btn sm', href: '#/run/' + enc(slug) + '/' + enc(runId) + '/files' }, ic('folder', 13), 'All files & logs'))));
+  }
+
+  /* ---- plan (RunSpec) */
+  function tPlan() {
+    const sp = d.run_spec;
+    if (!sp) return h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('git', 30), 'No RunSpec was produced for this run.'));
+    const cc = { high: 'ok', medium: 'warn', low: 'bad' };
+    const raw = h('pre', { class: 'codebox', style: { display: 'none', maxHeight: '480px', overflow: 'auto' } }, JSON.stringify(sp, null, 2));
+    return h('div', { class: 'stack' },
+      h('div', { class: 'grid g3' },
+        h('div', { class: 'card kpi' }, h('div', { class: 'v' }, sp.steps.length), h('div', { class: 'l' }, 'Steps planned'), h('div', { class: 'tiny faint', style: { marginTop: '6px' } }, `decided by ${sp.decided_by}`)),
+        h('div', { class: 'card kpi' }, h('div', { class: 'v' }, h('span', { class: 'chip ' + (cc[sp.confidence] || '') }, sp.confidence)), h('div', { class: 'l' }, 'Overall plan confidence')),
+        h('div', { class: 'card kpi' }, h('div', { class: 'v' }, `${sp.claims.filter(c => c.status === 'mapped').length}/${sp.claims.length}`), h('div', { class: 'l' }, 'Claims mapped to steps'))),
+      h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Steps')),
+        sp.steps.map(s => h('div', { class: 'step-card' },
+          h('div', { class: 'row', style: { marginBottom: '8px' } }, h('b', { class: 'mono' }, s.id), s.gpu ? h('span', { class: 'chip violet' }, 'GPU') : null, h('span', { class: 'chip' }, `${s.timeout_min} min cap`), h('span', { class: 'chip ' + (cc[s.confidence] || '') }, s.confidence + ' confidence'),
+            s.level !== 'full_rerun' ? h('span', { class: 'chip info' }, s.level) : null, (s.covers || []).length ? h('span', { class: 'faint small' }, 'covers claims ' + s.covers.map(c => '#' + c).join(', ')) : h('span', { class: 'faint small' }, 'prerequisite')),
+          h('div', { class: 'codebox' }, `${s.cwd} $ ${s.command}`),
+          (s.needs || []).length || (s.reads || []).length ? h('div', { class: 'small muted', style: { marginTop: '8px' } }, (s.needs || []).length ? `needs ${s.needs.join(', ')}` : '', (s.needs || []).length && (s.reads || []).length ? ' · ' : '', (s.reads || []).length ? `reads ${s.reads.join(', ')}` : '') : null,
+          (s.patches || []).map(p => h('div', { class: 'small', style: { marginTop: '8px' } }, h('span', { class: 'chip warn' }, 'path rewrite'), ' ', h('span', { class: 'mono' }, p.file), h('span', { class: 'muted' }, ' — ' + p.reason))),
+          (s.evidence || []).map(e => h('div', { class: 'ev' }, h('span', { class: 'chip' }, e.kind), h('span', {}, e.file ? h('span', { class: 'mono' }, e.file + (e.line ? ':' + e.line : '') + ' ') : null, e.text)))))),
+      h('div', { class: 'grid g2e' },
+        h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Repository & environment')),
+          h('div', { class: 'card-b' }, h('dl', { class: 'kv' }, h('dt', {}, 'Repo'), h('dd', {}, h('a', { href: sp.repo.url, target: '_blank', rel: 'noopener' }, sp.repo.url)), h('dt', {}, 'Commit'), h('dd', { class: 'mono small' }, sp.repo.commit),
+            sp.repo.subdir ? [h('dt', {}, 'Subdir'), h('dd', { class: 'mono' }, sp.repo.subdir)] : null,
+            h('dt', {}, 'Hardware'), h('dd', {}, `GPU ${sp.hardware.gpu}`, h('div', { class: 'muted small' }, sp.hardware.reason)),
+            h('dt', {}, 'pip'), h('dd', {}, (sp.environment.pip || []).length ? sp.environment.pip.map(p => h('span', { class: 'chip mono', style: { marginRight: '5px' } }, p)) : '–'),
+            h('dt', {}, 'Requirements'), h('dd', {}, sp.environment.requirements_file || '–', ` (${sp.environment.requirements_policy})`)))),
+        h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Data sources')),
+          (sp.data || []).length ? h('div', { class: 'card-b' }, sp.data.map(x => h('div', { style: { marginBottom: '10px' } }, h('div', { class: 'row' }, h('b', { class: 'mono small' }, x.id), h('span', { class: 'chip' }, x.kind), x.size_mb ? h('span', { class: 'faint small' }, x.size_mb + ' MB') : null), h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.ref)))) : h('div', { class: 'empty small' }, 'No external data needed.'))),
+      h('section', { class: 'card' }, h('div', { class: 'card-h' }, h('h3', {}, 'Claim → step map')),
+        h('div', { class: 'tw' }, h('table', { class: 't' }, h('tbody', {}, sp.claims.map(c => h('tr', {}, h('td', { class: 'num faint' }, '#' + c.claim_id),
+          h('td', {}, h('span', { class: 'chip ' + (c.status === 'mapped' ? 'ok' : 'warn') }, c.status)),
+          h('td', {}, (c.step_ids || []).map(s => h('span', { class: 'chip mono', style: { marginRight: '5px' } }, s)), c.reason ? h('span', { class: 'muted' }, c.reason) : null))))))),
+      h('div', {}, h('button', { class: 'btn sm', onclick: e => { const o = raw.style.display === 'none'; raw.style.display = o ? 'block' : 'none'; e.currentTarget.lastChild.textContent = o ? 'Hide raw JSON' : 'Show raw JSON'; } }, ic('terminal', 13), h('span', {}, 'Show raw JSON')), raw));
+  }
+
+  /* ---- paper (figures + markdown) */
+  function tPaper() {
+    const box = h('div', { class: 'stack' }, h('div', { class: 'empty' }, h('span', { class: 'spin' })));
+    (async () => {
+      let tree = []; try { tree = (await api.tree(slug, runId)).files; } catch { }
+      const imgs = tree.filter(f => f.path.startsWith('01_pdf/') && /\.(png|jpe?g|webp|gif)$/i.test(f.path));
+      let md = null; try { md = await api.text(run, '01_pdf/paper.md'); } catch { }
+      mount(box,
+        imgs.length ? h('section', { class: 'card' }, h('div', { class: 'card-h' }, ic('image', 16), h('h3', {}, 'Figures extracted from the PDF'), h('span', { class: 'sub' }, imgs.length)),
+          h('div', { class: 'card-b fig' }, imgs.slice(0, 60).map(f => h('img', { loading: 'lazy', src: fileUrl(run, f.path), alt: f.path, title: f.path.split('/').pop(),
+            onclick: () => { const lb = h('div', { class: 'lightbox', onclick: () => lb.remove() }, h('img', { src: fileUrl(run, f.path) })); document.body.append(lb); } })))) : null,
+        md != null ? h('section', { class: 'card' }, h('div', { class: 'card-h' }, ic('file', 16), h('h3', {}, 'paper.md'), h('div', { class: 'sp' }), h('a', { class: 'btn sm', href: fileUrl(run, '01_pdf/paper.md', true) }, ic('download', 13), 'Download')),
+          h('div', { class: 'card-b', style: { maxHeight: '760px', overflow: 'auto' } }, mdToDom(md.length > 250000 ? md.slice(0, 250000) + '\n\n… (truncated; download for the full text)' : md, { run, base: '01_pdf/' }))) :
+          h('div', { class: 'card' }, h('div', { class: 'empty' }, ic('file', 30), 'The converted paper is not available for this run.')));
+    })();
+    return box;
+  }
+
+  /* ---- report.md */
+  function tReport() {
+    const box = h('div', { class: 'card' }, h('div', { class: 'empty' }, h('span', { class: 'spin' })));
+    api.text(run, 'report.md').then(md => mount(box, h('div', { class: 'card-h' }, h('h3', {}, 'report.md'), h('div', { class: 'sp' }),
+      h('a', { class: 'btn sm', href: fileUrl(run, 'report.md', true) }, ic('download', 13), 'report.md'), h('a', { class: 'btn sm', href: fileUrl(run, 'report.json', true) }, ic('download', 13), 'report.json')),
+      h('div', { class: 'card-b' }, mdToDom(md, { run, base: '' })))).catch(() => mount(box, h('div', { class: 'empty' }, ic('info', 30), 'No report.md yet.')));
+    return box;
+  }
+
+  /* ---- files */
+  function tFiles() {
+    const box = h('div', { class: 'card' }, h('div', { class: 'empty' }, h('span', { class: 'spin' })));
+    api.tree(slug, runId).then(t => {
+      const groups = {}; t.files.forEach(f => { const p = f.path.includes('/') ? f.path.split('/')[0] : '(run folder)'; (groups[p] = groups[p] || []).push(f); });
+      const order = Object.keys(groups).sort((a, b) => a === '(run folder)' ? -1 : b === '(run folder)' ? 1 : a.localeCompare(b));
+      mount(box, h('div', { class: 'card-h' }, h('h3', {}, 'Run folder'), h('span', { class: 'sub mono' }, `${slug}/${runId}`)),
+        h('div', { class: 'ftree' }, order.map(g => h('details', { open: g === '(run folder)' || g === 'logs' },
+          h('summary', {}, ic('folder', 16), g, h('span', { class: 'chip', style: { marginLeft: 'auto' } }, groups[g].length)),
+          groups[g].slice(0, 400).map(f => h('div', { class: 'frow' }, h('span', { class: 'p' }, f.path), h('span', { class: 'faint tiny num' }, fmtBytes(f.size)),
+            h('a', { href: fileUrl(run, f.path), target: '_blank', rel: 'noopener', title: 'Open' }, ic('ext', 14)), h('a', { href: fileUrl(run, f.path, true), title: 'Download' }, ic('download', 14)))),
+          groups[g].length > 400 ? h('div', { class: 'frow faint' }, `… ${groups[g].length - 400} more`) : null))),
+        t.truncated ? h('div', { class: 'card-b faint small' }, 'Listing truncated at 3000 files.') : null);
+    }).catch(() => mount(box, h('div', { class: 'empty' }, 'Could not list files.')));
+    return box;
+  }
+}
+
+/* ============================================================ boot */
+route();
+setInterval(async () => {          // keep the sidebar's "Live run" indicator honest
+  const was = S.health && S.health.active_job && S.health.active_job.id;
+  await refreshHealth();
+  const now = S.health && S.health.active_job && S.health.active_job.id;
+  if (was !== now) refreshNav();
+  if (was !== now && !location.hash.startsWith('#/live') && !location.hash.startsWith('#/new')) { await refreshRuns(); route(); }
+}, 5000);
+</script>
+</body>
+</html>
