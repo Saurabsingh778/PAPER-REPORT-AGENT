@@ -26,6 +26,8 @@ PROMPT = """Extract facts from the scientific paper below.
 Use only information present in the text. If something is absent, return an empty list or null.
 Only list a URL if it appears in the candidate links. Copy numbers exactly as written; never compute or estimate.
 
+CRITICAL INSTRUCTION: You MUST extract relevant URLs from the CANDIDATE LINKS and explicitly place them into the `code_repos` and `data_links` arrays. Use "code" as the note for repositories and "dataset" for data links.
+
 CANDIDATE LINKS (found by regex, with context):
 {candidates}
 
@@ -108,8 +110,28 @@ def main(out_dir, results_dir=None, stem=None):
     results = []
     for r in data.main_results:
         d = r.model_dump(); d["verified"] = compact(r.value) in flat; results.append(d)
-    repos = [{**l.model_dump(), "verified": compact(l.url) in flat} for l in data.code_repos]
-    datas = [{**l.model_dump(), "verified": compact(l.url) in flat} for l in data.data_links]
+
+    all_links = data.code_repos + data.data_links
+
+    # Keep a set of seen URLs to remove duplicates
+    seen_urls = set()
+    unique_links = []
+    for link in all_links:
+        if link.url not in seen_urls:
+            unique_links.append(link)
+            seen_urls.add(link.url)
+        
+    # Forgiving filter: route to datas if "data" is in the note, otherwise route to repos
+    repos = []
+    datas = []
+    for l in unique_links:
+        item = {**l.model_dump(), "verified": compact(l.url) in flat}
+        note_text = (l.note or "").lower()
+        
+        if "data" in note_text:
+            datas.append(item)
+        else:
+            repos.append(item)
 
     final = {"main_results": results, "code_repos": repos, "data_links": datas,
              "availability_statement": data.availability_statement}

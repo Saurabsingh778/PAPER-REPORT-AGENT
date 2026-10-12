@@ -74,6 +74,7 @@ eggs/
 Logs/
 lib/
 lib64/
+Outputs/
 parts/
 sdist/
 var/
