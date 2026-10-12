@@ -323,11 +323,13 @@ class RunSpec(BaseModel):
             errs.append(f"timeouts add up to {total} min, more than one {MAX_SESSION_MIN}-min session; "
                         f"split into several specs or drop steps")
 
-        # honest confidence: the spec is never more sure than its least sure step
+        # honest confidence: the spec is never more sure than its least sure step.
+        # Derived, not a reason to reject: the planner kept tripping on this and each
+        # rejection cost a full LLM retry, so the value is simply lowered to the floor.
         if self.steps:
-            floor = min(CONF_RANK[s.confidence] for s in self.steps)
-            if CONF_RANK[self.confidence] > floor:
-                errs.append("spec confidence is higher than its least confident step")
+            floor_conf = min((s.confidence for s in self.steps), key=CONF_RANK.__getitem__)
+            if CONF_RANK[self.confidence] > CONF_RANK[floor_conf]:
+                self.confidence = floor_conf
         if self.decided_by == "triage" and any(
             all(e.kind == "llm_judgment" for e in s.evidence) and s.confidence == "high"
             for s in self.steps
@@ -343,7 +345,60 @@ class RunSpec(BaseModel):
         return [c.claim_id for c in self.claims if c.status == "mapped"]
 
 
+# ----------------------------------------------------------------------------- data layout
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def find_data_folder(data_root, *names: str):
+    """Locate, under a downloaded-data root, the top-level folder a data entry refers to.
+
+    Downloaded repos land in <data_root>/<owner>_<repo>, while a spec names them by `dest`,
+    by `id`, or by the first segment of an in_repo `ref`. Match exact first, then by
+    normalised substring (either direction). Returns a Path or None.
+    """
+    root = Path(data_root)
+    if not root.is_dir():
+        return None
+    folders = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    wanted = [n for n in names if n]
+    for n in wanted:                      # exact
+        for f in folders:
+            if f.name == n:
+                return f
+    for n in wanted:                      # fuzzy
+        nn_ = _norm(n)
+        if len(nn_) < 3:
+            continue
+        for f in folders:
+            fn = _norm(f.name)
+            if nn_ in fn or fn in nn_:
+                return f
+    return None
+
+
 # ----------------------------------------------------------------------------- pre-flight
+def _check_flag_values(step_id: str, toks: list[str], script: str, script_path: Path) -> list[str]:
+    """`--experiments B_ext8d`: a name-like value (contains '_') that never appears in the script
+    is almost certainly invented by the planner. Paths, numbers and plain words are ignored."""
+    try:
+        src = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out: list[str] = []
+    for i, t in enumerate(toks[:-1]):
+        if not (t.startswith("--") and "=" not in t):
+            continue
+        val = toks[i + 1]
+        if val.startswith("-") or "/" in val or "\\" in val:
+            continue
+        for part in val.split(","):
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+", part) and part not in src:
+                out.append(f"step '{step_id}': value '{part}' for {t} does not appear in {script}; "
+                           f"the script has no such option/name")
+    return out
+
+
 def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
     """Check the spec against the cloned repo. Reads files, never executes anything.
     Returns a list of problems; empty means the spec is runnable as far as can be told locally.
@@ -358,10 +413,17 @@ def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
 
     data = {d.id: d for d in spec.data}
     for d in spec.data:
-        if d.kind == "in_repo" and not (repo_root / d.ref).exists():
-            problems.append(f"data '{d.id}': {d.ref} is not in the repo")
-        if data_root and d.dest and d.kind != "kaggle_dataset" and not (data_root / d.dest).exists():
-            problems.append(f"data '{d.id}': {d.dest} not found under the data folder")
+        if d.kind == "in_repo":
+            # in_repo data may live in the code repo OR in a data repo downloaded under {DATA}
+            # (the planner is shown both trees), so it only counts as missing if neither has it.
+            in_code = (repo_root / d.ref).exists()
+            in_data = bool(data_root and (data_root / d.ref).exists())
+            if not in_code and not in_data:
+                where = "the repo or the data folder" if data_root else "the repo"
+                problems.append(f"data '{d.id}': {d.ref} is not in {where}")
+        elif data_root and d.kind in ("github_repo", "http_download"):
+            if not (d.dest and (data_root / d.dest).exists()) and not find_data_folder(data_root, d.dest, d.id):
+                problems.append(f"data '{d.id}': {d.dest} not found under the data folder")
 
     produced: set[str] = set()
     for s in spec.steps:
@@ -375,8 +437,11 @@ def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
         script = next((t for t in toks if t.endswith(".py")), None)
         if script:
             p = Path(script)
-            if not (p if p.is_absolute() else cwd / p).exists():
+            script_path = p if p.is_absolute() else cwd / p
+            if not script_path.exists():
                 problems.append(f"step '{s.id}': script {script} not found (cwd {s.cwd})")
+            else:
+                problems += _check_flag_values(s.id, toks, script, script_path)
         if data_root:
             for t in toks:
                 bare = t.split("=", 1)[-1]

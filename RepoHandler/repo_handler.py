@@ -179,6 +179,15 @@ CRITICAL PLANNING GUIDELINES:
      unavailable, or (c) it clearly exceeds the LOCAL MACHINE limits above (VRAM, runtime). State which.
 6. PATH REWRITES:
    - If scripts contain hardcoded local paths (e.g., ./data, /path/to/data), provide a PathRewrite patch replacing them with {{DATA}}/<folder>.
+7. DATA PATHS:
+   - {{DATA}} is the root of the DOWNLOADED DATA FILES listing above, with that exact layout. Write data
+     paths as {{DATA}}/<path exactly as listed there>, e.g. {{DATA}}/<repo_folder>/<sub>/<folder>.
+   - Pick the script whose INPUT FORMAT matches the files actually downloaded. A script that loads a
+     file which is neither in the repo nor downloaded (e.g. a dataset.csv made by a helper script that
+     is not in the FILE LIST) cannot run; do not plan it.
+8. ARGUMENT VALUES:
+   - Any value passed to a flag (--experiments, --config, --model, ...) must be a name that literally
+     appears in that script's source. Copy it from the code; never invent or abbreviate one.
 """
 
 
@@ -266,6 +275,37 @@ def _fill_gaps(prompt: str, spec: RunSpec, response, plog, rounds: int = 1):
     return spec, response
 
 
+def _repair_preflight(prompt: str, spec: RunSpec, problems: List[str], response, plog,
+                      repo_dir: Path, data_dir: Optional[Path]):
+    """One extra planning pass when the local pre-flight finds concrete problems (invented
+    flag values, missing data paths, ...). The corrected plan replaces the first one only if it
+    validates and has strictly fewer problems, so this can never make things worse."""
+    listing = "\n".join(f"- {p}" for p in problems)
+    print(f"[*] Pre-flight found {len(problems)} problem(s); asking planner to fix the plan...")
+    extra = (
+        "\n\nA LOCAL PRE-FLIGHT CHECK OF YOUR PLAN FOUND THESE PROBLEMS:\n" + listing +
+        "\n\nPREVIOUS PLAN:\n" + spec.model_dump_json() +
+        "\n\nReturn a COMPLETE corrected RunSpec. Use only option values that appear in the script "
+        "source, only data paths that exist under {DATA} as listed, and only scripts whose input "
+        "format matches the downloaded data. If another script already runs the variant a claim needs "
+        "(check its feature sets / experiment names), use that script instead. Mark a claim "
+        "unreproducible only if no script in the repo can produce it."
+    )
+    try:
+        new_spec, new_resp = _request_spec(prompt + extra, plog)
+    except Exception as exc:
+        plog.warning(f"pre-flight repair failed, keeping first plan: {exc}")
+        return spec, response, problems
+    new_problems = check_against_repo(new_spec, repo_dir, data_dir)
+    before = (len(problems), -len(spec.mapped_claim_ids()))
+    after = (len(new_problems), -len(new_spec.mapped_claim_ids()))
+    plog.info("pre-flight repair pass", problems_before=len(problems), problems_after=len(new_problems),
+              mapped_before=len(spec.mapped_claim_ids()), mapped_after=len(new_spec.mapped_claim_ids()))
+    if after < before:
+        return new_spec, new_resp, new_problems
+    return spec, response, problems
+
+
 def generate_run_spec(
     extraction_json_path: str | Path,
     repo_dir: str | Path,
@@ -312,8 +352,12 @@ def generate_run_spec(
     plog.info("RunSpec validated", gpu=spec.hardware.gpu, steps=len(spec.steps),
               claims=len(spec.claims), confidence=spec.confidence)
 
-    # Local pre-flight check
-    problems = check_against_repo(spec, repo_dir)
+    # Local pre-flight check (data_dir lets in_repo / {DATA} paths be verified against what was
+    # actually downloaded; without it every data-repo path was reported as "not in the repo").
+    problems = check_against_repo(spec, repo_dir, data_dir)
+    if problems:
+        spec, response, problems = _repair_preflight(prompt, spec, problems, response, plog,
+                                                     repo_dir, data_dir)
     if problems:
         print("[!] Pre-flight warnings found:")
         for prob in problems:

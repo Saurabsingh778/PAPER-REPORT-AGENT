@@ -2,14 +2,15 @@
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from Logger import local_session
-from Schema.RunSpec import RunSpec
+from Schema.RunSpec import RunSpec, find_data_folder
 
 DOCKER_RUNNER_SCRIPT = r'''
 import subprocess, json, time, os, sys, shutil
@@ -152,6 +153,73 @@ def run_locally(
         return _run_locally(spec, workdir, repo_dir, data_dir, image, sess)
 
 
+_IGNORE_VCS = shutil.ignore_patterns(".git", ".hg", "__pycache__")
+
+
+def _stage_data(spec: RunSpec, repo_dir: Path, data_dir: Path, working_data_dir: Path) -> List[Dict[str, Any]]:
+    """Copy everything under data_dir into working_data_dir (same relative layout, so
+    {DATA}/<anything the planner saw> resolves), then alias each spec.data entry whose
+    dest/id is not already a folder there (relative symlink, valid inside the container).
+
+    Real copies, NOT absolute symlinks: an absolute host path does not exist in the container
+    (it dangled, so the step saw no data), and steps may write next to their input data,
+    which must not touch ./Downloads.
+    """
+    if data_dir.exists():
+        for child in sorted(data_dir.iterdir()):
+            if child.name.startswith("."):
+                continue
+            target = working_data_dir / child.name
+            if child.is_dir():
+                shutil.copytree(child, target, ignore=_IGNORE_VCS)
+            else:
+                shutil.copy2(child, target)
+
+    mounts: List[Dict[str, Any]] = []
+    for d in spec.data:
+        name = d.dest or d.id
+        entry = {"id": d.id, "dest": name, "kind": d.kind, "source": None, "mode": "none",
+                 "candidates": sorted(p.name for p in working_data_dir.iterdir())}
+        if d.kind == "in_repo" and (repo_dir / d.ref).exists():
+            entry.update(source=str(repo_dir / d.ref), mode="in_code_repo")   # reached via {REPO}
+        elif (working_data_dir / name).exists():
+            entry.update(source=str(working_data_dir / name), mode="direct")
+        else:
+            first_seg = d.ref.split("/", 1)[0] if d.kind == "in_repo" else ""
+            hit = find_data_folder(working_data_dir, name, d.id, first_seg)
+            if hit is not None:
+                alias = working_data_dir / name
+                try:
+                    alias.symlink_to(hit.name, target_is_directory=True)   # relative link
+                    entry.update(source=str(hit), mode="alias")
+                except OSError:
+                    shutil.copytree(hit, alias)
+                    entry.update(source=str(hit), mode="copy")
+        mounts.append(entry)
+    return mounts
+
+
+def missing_data_paths(spec: RunSpec, working_data_dir: Path) -> List[tuple]:
+    """(step_id, relative path) for every {DATA}/... argument in a step command that does not
+    exist in the staged data. Output locations a step creates itself are not flagged: only
+    paths whose parent folder is also absent are reported."""
+    out = []
+    for s in spec.steps:
+        try:
+            toks = shlex.split(s.command)
+        except ValueError:
+            continue
+        for t in toks:
+            bare = t.split("=", 1)[-1]
+            if not bare.startswith("{DATA}"):
+                continue
+            rel = bare.removeprefix("{DATA}").lstrip("/")
+            p = working_data_dir / rel
+            if not p.exists() and not p.parent.exists():
+                out.append((s.id, rel))
+    return out
+
+
 def _run_locally(
     spec: RunSpec,
     workdir: Path,
@@ -178,32 +246,17 @@ def _run_locally(
         shutil.rmtree(working_repo_dir)
     shutil.copytree(repo_dir, working_repo_dir)
 
-    # 2. Prepare data directory mount (matching spec.data dest mapping)
+    # 2. Stage data. The planner is shown the downloaded data as paths relative to {DATA}
+    #    (e.g. "digital-synthesis-lab_DM2/demo/..."), so {DATA} inside the container must have
+    #    exactly that layout. Staging one folder under spec.data's dest/id instead (the old
+    #    behaviour) moved it to /workspace/data/<id>/ and every {DATA}/<repo>/... path broke.
     working_data_dir = runner_dir / "data"
     shutil.rmtree(working_data_dir, ignore_errors=True)  # rebuilt each run (drops stale copies/links)
     working_data_dir.mkdir(exist_ok=True)
-    data_mounts = []
-    for d in spec.data:
-        dest_name = d.dest or d.id
-        target = working_data_dir / dest_name
-        # Find matching downloaded data folder
-        available = list(data_dir.iterdir()) if data_dir.exists() else []
-        candidates = list(data_dir.glob(f"*{dest_name}*")) if data_dir.exists() else []
-        candidates = candidates or available
-        mount = {"id": d.id, "dest": dest_name, "kind": d.kind, "source": None, "mode": "none",
-                 "candidates": [str(c) for c in candidates]}
-        if candidates and not target.exists():
-            # Real copy, NOT a symlink: a symlink stores an absolute host path that does not
-            # exist inside the container (it dangled, so the step saw no data), and steps
-            # may write next to their input data, which must not touch ./Downloads.
-            src = candidates[0]
-            if src.is_dir():
-                shutil.copytree(src, target)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, target)
-            mount.update(source=str(src), mode="copy")
-        data_mounts.append(mount)
+    data_mounts = _stage_data(spec, repo_dir, data_dir, working_data_dir)
+    missing = missing_data_paths(spec, working_data_dir)
+    for step_id, path in missing:
+        print(f"[!] Step '{step_id}' uses {{DATA}}/{path}, which does not exist in the staged data.")
     sess.workspace(runner_dir, repo_dir, working_repo_dir, data_dir, data_mounts)
 
     # 3. Write runner files
