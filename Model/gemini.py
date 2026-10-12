@@ -12,8 +12,9 @@ from Logger import get_phase, link_artifact, logged, phase, start_run
 
 load_dotenv()
 
-OUT_DIR = Path("/home/saurab/research-paper-agent/Model/Model_outputs")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Default location for the standalone CLI. Relative to this file (not a machine-specific path)
+# and created only when something is written. The integrated pipeline passes its own results_dir.
+OUT_DIR = Path(__file__).resolve().parent / "Model_outputs"
 stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 API_KEY = os.getenv("API_KEY")
@@ -79,8 +80,22 @@ def extract(prompt) -> Extraction:
 def compact(s):
     return re.sub(r"\s+", "", s)
 
-def main(out_dir):
+def main(out_dir, results_dir=None, stem=None):
+    """Extract claims, code repos and data links from <out_dir>/paper.md.
+
+    Standalone (results_dir=None): extraction.json goes next to paper.md and the stamped
+    phase1_<stamp>.json/.md go to Model/Model_outputs, as before.
+    Integrated (results_dir given): everything is written into results_dir, named <stem>.*
+    (default stem "extraction"), so one run's outputs stay together.
+    Returns {"extraction_json", "phase1_json", "phase1_md", "data"}.
+    """
     out = Path(out_dir)
+    extraction_dir = Path(results_dir) if results_dir else out
+    phase1_dir = Path(results_dir) if results_dir else OUT_DIR
+    stem = stem or ("extraction" if results_dir else f"phase1_{stamp}")
+    extraction_dir.mkdir(parents=True, exist_ok=True)
+    phase1_dir.mkdir(parents=True, exist_ok=True)
+
     text = (out / "paper.md").read_text(encoding="utf-8")
     cands = candidates(text)
     print(f"{len(cands)} candidate links found by regex")
@@ -98,7 +113,8 @@ def main(out_dir):
 
     final = {"main_results": results, "code_repos": repos, "data_links": datas,
              "availability_statement": data.availability_statement}
-    (out / "extraction.json").write_text(json.dumps(final, indent=2), encoding="utf-8")
+    extraction_json = extraction_dir / "extraction.json"
+    extraction_json.write_text(json.dumps(final, indent=2), encoding="utf-8")
 
     print("\nMAIN RESULTS")
     for i, r in enumerate(results, 1):
@@ -118,19 +134,24 @@ def main(out_dir):
     lines += ["\n## Data links\n"] + [f"- [{'ok' if r['verified'] else 'CHECK'}] {r['url']} ({r['note']})" for r in datas]
     lines += ["\n## Availability statement\n", final["availability_statement"] or "none"]
 
-    (OUT_DIR / f"phase1_{stamp}.md").write_text("\n".join(lines), encoding="utf-8")
-    (OUT_DIR / f"phase1_{stamp}.json").write_text(json.dumps(final, indent=2), encoding="utf-8")
-    print(f"Saved to {OUT_DIR}/phase1_{stamp}.md")
+    phase1_md = phase1_dir / f"{stem}.md"
+    phase1_json = phase1_dir / f"{stem}.json"
+    phase1_md.write_text("\n".join(lines), encoding="utf-8")
+    if phase1_json.resolve() != extraction_json.resolve():  # integrated runs: same file, write once
+        phase1_json.write_text(json.dumps(final, indent=2), encoding="utf-8")
+    print(f"Saved to {phase1_md}")
 
     unverified = [r["claim"] for r in results if not r["verified"]]
     get_phase().info("extraction written", results=len(results), results_unverified=len(unverified),
-                     repos=len(repos), data_links=len(datas), output=str(OUT_DIR / f"phase1_{stamp}.json"))
+                     repos=len(repos), data_links=len(datas), output=str(phase1_json))
     for claim in unverified:
         get_phase().warning(f"result value not found in paper text: {claim}")
     get_phase().save_artifact("extraction_final.json", final)
     # Lets the Phase 2 run find this run as its upstream.
-    link_artifact(OUT_DIR / f"phase1_{stamp}.json", "phase1_json")
-    link_artifact(OUT_DIR / f"phase1_{stamp}.md", "phase1_markdown")
+    link_artifact(phase1_json, "phase1_json")
+    link_artifact(phase1_md, "phase1_markdown")
+    return {"extraction_json": extraction_json, "phase1_json": phase1_json,
+            "phase1_md": phase1_md, "data": final}
 
 if __name__ == "__main__":
     out_dir = sys.argv[1]

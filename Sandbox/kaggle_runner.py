@@ -88,6 +88,7 @@ for s in SPEC["steps"]:
 
     r["step_id"] = s["id"]
     r["covers"] = s["covers"]
+    r["claim_indices"] = s["covers"]  # compare() reads this (the local runner already sets it)
     r["signals"] = s["signals"]
     out["steps"].append(r)
     save()
@@ -145,6 +146,10 @@ def run_on_kaggle(
     d = write_kernel(spec, Path(workdir), slug, datasets)
     p = kaggle("kernels", "push", "-p", str(d))
     print(p.stdout, p.stderr)
+    if p.returncode != 0:
+        # Without this a bad token/slug fell into the status loop below and polled for hours.
+        raise RuntimeError(f"kaggle kernels push failed (rc={p.returncode}): "
+                           f"{(p.stderr or p.stdout).strip()[:500]}")
 
     ref = f"{KAGGLE_USER}/{slug}"
     t0 = time.time()
