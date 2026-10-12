@@ -11,9 +11,10 @@ from typing import Any, Dict, List, Optional
 
 from Logger import local_session
 from Schema.RunSpec import RunSpec, find_data_folder
+from Sandbox.docker_resolver import resolve_docker_image
 
 DOCKER_RUNNER_SCRIPT = r'''
-import subprocess, json, time, os, sys, shutil
+import subprocess, json, time, os, sys, shutil, shlex
 
 with open("/workspace/spec.json", "r", encoding="utf-8") as f:
     SPEC = json.load(f)
@@ -57,6 +58,29 @@ def save():
     with open(os.path.join(OUT_DIR, "results.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
+# A RunSpec is a runtime contract, not advice.  Refuse to install an old stack
+# into a different interpreter when an explicit custom image breaks that contract.
+ENV = SPEC.get("environment", {})
+PACKAGES = ENV.get("packages", {})
+for item in ENV.get("env_vars", []):
+    if isinstance(item, dict):
+        key, value = item.get("name"), item.get("value")
+        if key is not None:
+            os.environ[str(key)] = str(value)
+out["environment"] = {"requested_language": ENV.get("language", "python"),
+                      "requested_language_version": ENV.get("language_version"),
+                      "requirements_policy": ENV.get("requirements_policy", "resolved")}
+if ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
+    expected = ".".join(str(ENV["language_version"]).split(".")[:2])
+    actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if actual != expected:
+        out["setup"].append({"cmd": "python --version", "rc": 2, "sec": 0,
+                             "stdout": actual,
+                             "stderr": f"RunSpec requires Python {expected}, image provides Python {actual}"})
+        save()
+        print(f"[x] RunSpec requires Python {expected}, image provides Python {actual}")
+        sys.exit(2)
+
 # Check GPU availability
 if SPEC.get("hardware", {}).get("gpu") != "none":
     smi = run("nvidia-smi -L", W, 30)
@@ -75,11 +99,52 @@ for step in SPEC.get("steps", []):
                 open(fpath, "w", encoding="utf-8").write(content)
                 out["patches"].append({"file": patch["file"], "status": "applied"})
 
-# 2. Install pip dependencies
-for n, pkg in enumerate(SPEC.get("environment", {}).get("pip", []), 1):
-    print(f"[*] Installing pip package: {pkg}")
-    res = run(f"pip install -q {pkg}", REPO_DIR, 600, tag=f"pip_{n:02d}_{pkg}")
+# 2. Install the resolved environment. Legacy top-level fields are accepted so
+# saved specs from before the dynamic schema remain runnable.
+apt_packages = PACKAGES.get("apt", ENV.get("system_packages", []))
+if apt_packages:
+    out["setup"].append(run("apt-get update -qq", REPO_DIR, 600, tag="apt_update"))
+    cmd = "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends " + " ".join(
+        shlex.quote(str(pkg)) for pkg in apt_packages)
+    out["setup"].append(run(cmd, REPO_DIR, 900, tag="apt_install"))
+
+policy = ENV.get("requirements_policy", "resolved")
+if policy == "install_as_is":
+    for n, rel in enumerate(ENV.get("requirements_files", []), 1):
+        path = os.path.join(REPO_DIR, rel)
+        res = run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 1200 -r {shlex.quote(path)}", REPO_DIR, 900,
+                  tag=f"requirements_{n:02d}")
+        out["setup"].append(res)
+
+pip_packages = PACKAGES.get("pip", ENV.get("pip", []))
+if pip_packages:
+    print(f"[*] Installing resolved pip environment ({len(pip_packages)} packages)")
+    requirements = " ".join(shlex.quote(str(pkg)) for pkg in pip_packages)
+    res = run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 1200 {requirements}", REPO_DIR, 1800,
+              tag="pip_resolved")
     out["setup"].append(res)
+
+conda_packages = PACKAGES.get("conda", [])
+if conda_packages:
+    cmd = "conda install -y " + " ".join(shlex.quote(str(pkg)) for pkg in conda_packages)
+    out["setup"].append(run(cmd, REPO_DIR, 1200, tag="conda_install"))
+
+custom_managers = PACKAGES.get("custom", [])
+if isinstance(custom_managers, dict):  # specs saved before the list-based schema
+    custom_managers = [{"manager": name, "packages": packages} for name, packages in custom_managers.items()]
+for custom in custom_managers:
+    manager, packages = custom.get("manager"), custom.get("packages", [])
+    if packages:
+        cmd = f"{shlex.quote(str(manager))} install " + " ".join(shlex.quote(str(pkg)) for pkg in packages)
+        out["setup"].append(run(cmd, REPO_DIR, 1200, tag=f"custom_{manager}"))
+
+setup_failures = [result for result in out["setup"] if result.get("rc", 0) != 0]
+if setup_failures:
+    out["setup_failed"] = True
+    out["setup_failure_count"] = len(setup_failures)
+    save()
+    print(f"[x] Environment setup failed ({len(setup_failures)} command(s)); steps will not run.")
+    sys.exit(2)
 save()
 
 # 3. Execute steps in order
@@ -141,7 +206,7 @@ def run_locally(
     workdir: Path,
     repo_dir: Path,
     data_dir: Path,
-    image: str = DEFAULT_IMAGE,
+    image: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     """Runs the RunSpec inside a local Docker container.
 
@@ -149,8 +214,11 @@ def run_locally(
     live output, per-step results, raw command logs) is recorded in the run's separate
     local_session/ log layer.
     """
-    with local_session(image=image, workdir=str(workdir), gpu_policy=spec.hardware.gpu) as sess:
-        return _run_locally(spec, workdir, repo_dir, data_dir, image, sess)
+    selected_image = image or resolve_docker_image(
+        spec.environment, gpu_available=spec.hardware.gpu in ("required", "helpful")
+    )
+    with local_session(image=selected_image, workdir=str(workdir), gpu_policy=spec.hardware.gpu) as sess:
+        return _run_locally(spec, workdir, repo_dir, data_dir, selected_image, sess)
 
 
 _IGNORE_VCS = shutil.ignore_patterns(".git", ".hg", "__pycache__")

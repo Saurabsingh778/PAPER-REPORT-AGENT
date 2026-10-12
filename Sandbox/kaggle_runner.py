@@ -11,7 +11,7 @@ from .config import KAGGLE_USER
 # Using a standard multiline string with a simple placeholder __SPEC_JSON__
 # to avoid str.format() escaping collisions with Python braces and f-strings.
 KERNEL_TEMPLATE = r'''
-import subprocess, json, time, os, re, sys, shutil
+import subprocess, json, time, os, re, sys, shutil, shlex
 
 SPEC = json.loads(__SPEC_JSON__)
 W = "/kaggle/working"
@@ -68,9 +68,37 @@ for step in SPEC.get("steps", []):
                 open(fpath, "w", encoding="utf-8").write(content)
                 out["patches"].append({"file": patch["file"], "status": "applied"})
 
-# 4. Install Environment
-for pkg in SPEC.get("environment", {}).get("pip", []):
-    out["setup"].append(run(f"pip install -q {pkg}", REPO_DIR, 600))
+# 4. Install Environment. Kaggle cannot replace its base interpreter, so fail
+# clearly instead of silently attempting an old package on an incompatible Python.
+ENV = SPEC.get("environment", {})
+PACKAGES = ENV.get("packages", {})
+for item in ENV.get("env_vars", []):
+    if isinstance(item, dict):
+        key, value = item.get("name"), item.get("value")
+        if key is not None:
+            os.environ[str(key)] = str(value)
+if ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
+    expected = ".".join(str(ENV["language_version"]).split(".")[:2])
+    actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if actual != expected:
+        out["setup"].append({"cmd": "python --version", "rc": 2, "sec": 0, "stdout": actual,
+                             "stderr": f"RunSpec requires Python {expected}; Kaggle provides Python {actual}. Use --local."})
+        save()
+        raise RuntimeError(out["setup"][-1]["stderr"])
+
+policy = ENV.get("requirements_policy", "resolved")
+if policy == "install_as_is":
+    for rel in ENV.get("requirements_files", []):
+        out["setup"].append(run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 120 -r "
+                                f"{shlex.quote(os.path.join(REPO_DIR, rel))}", REPO_DIR, 900))
+pip_packages = PACKAGES.get("pip", ENV.get("pip", []))
+if pip_packages:
+    requirements = " ".join(shlex.quote(str(pkg)) for pkg in pip_packages)
+    out["setup"].append(run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 120 {requirements}", REPO_DIR, 1800))
+if any(result.get("rc", 0) != 0 for result in out["setup"]):
+    out["setup_failed"] = True
+    save()
+    raise RuntimeError("Environment setup failed; no reproduction steps were run.")
 save()
 
 # 5. Execute Steps in Order

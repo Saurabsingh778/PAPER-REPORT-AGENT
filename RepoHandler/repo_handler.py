@@ -18,12 +18,31 @@ from Schema.RunSpec import (
     Hardware,
     Evidence,
     check_against_repo,
-)
+    )
 
 CUDA_RE = re.compile(
     r"(\.cuda\(|to\(['\"]cuda|torch\.device\(['\"]cuda|torch\.cuda|jax\.devices\(['\"]gpu|tf\.device\(['\"]/GPU)",
     re.IGNORECASE,
 )
+
+ENVIRONMENT_FILE_RE = re.compile(
+    r"(?:^|/)(?:requirements(?:[-_.][\w-]+)?\.(?:txt|in)|environment(?:[-_.][\w-]+)?\.ya?ml|"
+    r"pyproject\.toml|setup\.py|setup\.cfg|Pipfile|poetry\.lock|conda\.ya?ml|Dockerfile)$",
+    re.IGNORECASE,
+)
+PYTHON_VERSION_RE = re.compile(
+    r"(?i)\bpython\s*(?:version\s*)?(?:==|>=|<=|~=|>|<)?\s*(2\.7|3\.\d{1,2})(?:\.\d+)?"
+)
+FRAMEWORK_VERSION_RE = re.compile(
+    r"(?i)\b(pytorch|torch|tensorflow|jax)\s*(?:==|>=|<=|~=|>|<|version\s*)?\s*(\d+\.\d+(?:\.\d+)?)"
+)
+IMPORT_PACKAGE_NAMES = {
+    "PIL": "Pillow", "cv2": "opencv-python", "sklearn": "scikit-learn",
+    "yaml": "PyYAML", "bs4": "beautifulsoup4", "torch": "torch",
+    "tensorflow": "tensorflow", "jax": "jax", "networkx": "networkx",
+    "numpy": "numpy", "scipy": "scipy", "pandas": "pandas",
+    "matplotlib": "matplotlib", "transformers": "transformers",
+}
 
 
 class RepoScanner:
@@ -91,6 +110,50 @@ class RepoScanner:
             }
         return scripts
 
+    def scan_environment(self, max_manifest_chars: int = 12000, max_scripts: int = 200) -> Dict[str, Any]:
+        """Collect dependency evidence for the planner without inventing versions.
+
+        Dependency manifests and README text remain authoritative. Imports merely establish
+        a fallback package list when a repository does not declare its environment.
+        """
+        manifests: Dict[str, str] = {}
+        imports: set[str] = set()
+        for path in self.repo_dir.rglob("*"):
+            if not path.is_file() or any(part.startswith(".") for part in path.relative_to(self.repo_dir).parts):
+                continue
+            rel = str(path.relative_to(self.repo_dir))
+            if ENVIRONMENT_FILE_RE.search(rel):
+                manifests[rel] = path.read_text(encoding="utf-8", errors="replace")[:max_manifest_chars]
+
+        for path in list(self.repo_dir.rglob("*.py"))[:max_scripts]:
+            if any(part.startswith(".") for part in path.relative_to(self.repo_dir).parts):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                modules = []
+                if isinstance(node, ast.Import):
+                    modules = [item.name for item in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    modules = [node.module]
+                for module in modules:
+                    package = IMPORT_PACKAGE_NAMES.get(module.split(".", 1)[0])
+                    if package:
+                        imports.add(package)
+
+        evidence = "\n".join(manifests.values())
+        return {
+            "manifests": manifests,
+            "detected_import_packages": sorted(imports),
+            "python_version_hints": sorted(set(PYTHON_VERSION_RE.findall(evidence))),
+            "framework_version_hints": [
+                {"name": "pytorch" if name.lower() in ("pytorch", "torch") else name.lower(), "version": version}
+                for name, version in FRAMEWORK_VERSION_RE.findall(evidence)
+            ],
+        }
+
     @staticmethod
     def scan_data_dir(data_dir: Path, max_entries: int = 200) -> List[str]:
         """List files in the downloaded data directory (relative paths, capped)."""
@@ -115,6 +178,7 @@ def build_run_spec_prompt(
     files: List[str],
     readme: str,
     scripts_info: Dict[str, Any],
+    environment_info: Dict[str, Any],
     data_files: Optional[List[str]] = None,
     resources: str = "",
 ) -> str:
@@ -148,6 +212,9 @@ README EXCERPT:
 
 KEY SCRIPT HEADS & STATIC CODE ANALYSIS:
 {json.dumps(scripts_info, indent=2)}
+
+ENVIRONMENT DISCOVERY (manifest text is authoritative; imports are fallback-only):
+{json.dumps(environment_info, indent=2)}
 
 CRITICAL PLANNING GUIDELINES:
 1. ONLY reference files that exist in the REPOSITORY FILE LIST. Never invent commands or scripts.
@@ -188,6 +255,28 @@ CRITICAL PLANNING GUIDELINES:
 8. ARGUMENT VALUES:
    - Any value passed to a flag (--experiments, --config, --model, ...) must be a name that literally
      appears in that script's source. Copy it from the code; never invent or abbreviate one.
+9. ENVIRONMENT (REQUIRED):
+   - Fill environment.language, environment.language_version, environment.frameworks,
+     environment.packages, environment.requirements_files, and environment.requirements_policy.
+   - Honour versions stated in README, setup.py, pyproject.toml, requirements*, and environment*.yml.
+     A README's bounded compatibility statement overrides a loose lower bound in a manifest. Choose
+     one concrete compatible Python version, never the host's default Python version.
+   - requirements_files may contain only installable requirements*.txt/.in or constraints*.txt/.in
+     files. Never put setup.py, pyproject.toml, or environment.yml there: they are evidence, not
+     inputs to `pip install -r`. Use policy "resolved" when packages.pip contains a concrete
+     compatible resolution; use "install_as_is" only when the requirements file is safe to install
+     unchanged; use "ignore" only when it is not installed.
+   - If no repository documentation or dependency manifest specifies a runtime, infer it from the
+     detected imports/code, choose a supported Python and packages, set policy "resolved", and use
+     low-confidence llm_judgment evidence for that inference.
+   - Never combine an old framework with a modern default Python. For example, if the repository
+     supports Python 2.7 or 3.6 and PyTorch 0.4 or 0.5, choose Python 3.6 and one PyTorch 0.x
+     release, rather than trying to install it on Python 3.10+.
+   - Resolve contradictory old pins before execution. In particular, TensorFlow 1.x requires
+     Python 3.5-3.7, numpy>=1.16,<1.19, and protobuf==3.20.3; do not retain a conflicting
+     numpy==1.15.* pin merely because it appears in an old requirements file.
+   - docker_image is optional. Leave it null unless the repository explicitly needs a custom base;
+     the executor will choose the version-matched Docker image from this environment contract.
 """
 
 
@@ -326,13 +415,15 @@ def generate_run_spec(
     files = scanner.scan_files()
     readme = scanner.read_readme()
     scripts_info = scanner.scan_python_scripts()
+    environment_info = scanner.scan_environment()
     data_files = RepoScanner.scan_data_dir(data_dir) if data_dir else []
 
     plog = get_phase()
     plog.info("repository scanned", commit=commit_sha, files=len(files), scripts=len(scripts_info),
               data_files=len(data_files), readme_chars=len(readme),
               gpu_script_hits=[p for p, i in scripts_info.items() if i["uses_gpu_indicators"]])
-    plog.save_artifact("repo_scan.json", {"files": files, "scripts": scripts_info, "data_files": data_files})
+    plog.save_artifact("repo_scan.json", {"files": files, "scripts": scripts_info,
+                                            "environment": environment_info, "data_files": data_files})
 
     prompt = build_run_spec_prompt(
         extraction=extraction,
@@ -341,6 +432,7 @@ def generate_run_spec(
         files=files,
         readme=readme,
         scripts_info=scripts_info,
+        environment_info=environment_info,
         data_files=data_files,
         resources=resources,
     )

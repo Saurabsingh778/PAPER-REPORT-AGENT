@@ -96,15 +96,170 @@ class DataSource(BaseModel):
 
 
 # ----------------------------------------------------------------------------- environment / hardware
-class Environment(BaseModel):
-    """Python packages on top of what Kaggle ships. Exact pins from old requirements files
-    usually don't install on a current Python, so the default is to ignore them."""
+class FrameworkSpec(BaseModel):
+    """Specification for any ML/numerical framework."""
+    name: str = Field(..., description="e.g. 'pytorch', 'tensorflow', 'jax', 'transformers'")
+    version: str | None = Field(None, description="e.g. '2.3.0', '1.15.2'")
+    backend: str | None = Field(None, description="e.g. 'cuda', 'rocm', 'tpu', 'cpu'")
 
-    pip: list[str] = Field(default_factory=list, description="names/specs installed one by one")
-    requirements_file: str | None = None
-    requirements_policy: Literal["ignore", "unpinned", "as_is"] = "ignore"
-    system_packages: list[str] = Field(default_factory=list)
+
+class CustomPackageManager(BaseModel):
+    """A non-pip package manager and the packages it should install."""
+    manager: str = Field(description="e.g. 'poetry' or 'npm'")
+    packages: list[str] = Field(default_factory=list)
+
+
+class EnvironmentVariable(BaseModel):
+    name: str
+    value: str
+
+
+class EnvironmentMetadata(BaseModel):
+    """Planner context kept as key/value records for Gemini Developer API schemas."""
+    key: str
+    value: str
+
+
+class PackageManagers(BaseModel):
+    """Packages grouped by the installer that must install them."""
+    pip: list[str] = Field(default_factory=list, description="PEP 508 requirements")
+    conda: list[str] = Field(default_factory=list)
+    apt: list[str] = Field(default_factory=list, description="Debian/Ubuntu system packages")
+    custom: list[CustomPackageManager] = Field(
+        default_factory=list,
+        description="Non-pip managers, e.g. [{'manager': 'poetry', 'packages': [...]}]",
+    )
+
+    @field_validator("custom", mode="before")
+    @classmethod
+    def _legacy_custom_map(cls, value):
+        if isinstance(value, dict):
+            return [{"manager": manager, "packages": packages} for manager, packages in value.items()]
+        return value
+
+
+class Environment(BaseModel):
+    """Execution environment definition determined dynamically by RepoHandler / AI Planner."""
+
+    # 1. Runtimes & Hardware
+    language: str = Field(default="python", description="'python', 'r', 'julia', 'node', etc.")
+    language_version: str = Field(default="3.10", description="Open-ended semantic version, e.g. '3.13', '3.11.4'")
+    cuda_version: str | None = Field(
+        default=None,
+        description="Dynamic CUDA version string like '12.4', '11.8', or None if CPU/unspecified",
+    )
+
+    # 2. Dynamic Frameworks (Supports multi-framework or arbitrary stacks)
+    frameworks: list[FrameworkSpec] = Field(
+        default_factory=list,
+        description="List of primary frameworks detected or requested",
+    )
+
+    # 3. Container & Execution Target
+    docker_image: str | None = Field(
+        None,
+        description="Target image URI, e.g. 'pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel'",
+    )
+
+    # 4. Dynamic Package Management
+    packages: PackageManagers = Field(default_factory=PackageManagers)
+    requirements_files: list[str] = Field(
+        default_factory=list,
+        description="Manifest paths, e.g. ['requirements.txt', 'environment.yml']",
+    )
+    requirements_policy: Literal["install_as_is", "resolved", "ignore", "as_is", "unpinned"] = Field(
+        default="resolved",
+        description="install_as_is installs requirements_files; resolved installs packages; "
+                    "ignore records manifests without installing them",
+    )
+
+    # 5. Dynamic Extensions (Env vars, build args, driver flags)
+    env_vars: list[EnvironmentVariable] = Field(
+        default_factory=list,
+        description="Environment variables, e.g. [{'name': 'TORCH_CUDA_ARCH_LIST', 'value': '8.0'}]",
+    )
+    metadata: list[EnvironmentMetadata] = Field(
+        default_factory=list,
+        description="Optional planner context as key/value records",
+    )
     notes: str = ""
+
+    # These input-only fields keep stored v1 specs and the UI demo working.  They are
+    # normalised into ``packages`` before a spec is sent to a runner.
+    # Do not use Pydantic's ``deprecated=True`` here: Gemini Developer API rejects
+    # the JSON Schema ``deprecated`` keyword before it can request a response.
+    pip: list[str] = Field(default_factory=list, exclude=True)
+    requirements_file: str | None = Field(None, exclude=True)
+    system_packages: list[str] = Field(default_factory=list, exclude=True)
+
+    @field_validator("env_vars", mode="before")
+    @classmethod
+    def _legacy_env_var_map(cls, value):
+        if isinstance(value, dict):
+            return [{"name": name, "value": str(item)} for name, item in value.items()]
+        return value
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _legacy_metadata_map(cls, value):
+        if isinstance(value, dict):
+            return [{"key": key, "value": str(item)} for key, item in value.items()]
+        return value
+
+    @field_validator("language_version")
+    @classmethod
+    def _language_version(cls, v: str) -> str:
+        if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", v):
+            raise ValueError("language_version must be a concrete version such as '3.6' or '3.11.4'")
+        return v
+
+    @field_validator("requirements_files")
+    @classmethod
+    def _requirements_files(cls, files: list[str]) -> list[str]:
+        for name in files:
+            if not name or name.startswith("/") or ".." in Path(name).parts:
+                raise ValueError(f"requirements file must be a repo-relative path: {name!r}")
+            base = Path(name).name.lower()
+            if not re.fullmatch(r"(?:requirements|constraints)(?:[-_.][\w-]+)?\.(?:txt|in)", base):
+                raise ValueError(
+                    f"requirements_files only accepts pip requirements/constraints files, not {name!r}; "
+                    "record setup.py or pyproject.toml as evidence in notes instead"
+                )
+        return list(dict.fromkeys(files))
+
+    @model_validator(mode="after")
+    def _normalise_legacy_fields(self):
+        """Accept old specs, but emit one unambiguous package-install contract."""
+        if self.pip:
+            self.packages.pip = list(dict.fromkeys([*self.packages.pip, *self.pip]))
+        if self.system_packages:
+            self.packages.apt = list(dict.fromkeys([*self.packages.apt, *self.system_packages]))
+        if self.requirements_file:
+            self.requirements_files = list(dict.fromkeys([*self.requirements_files, self.requirements_file]))
+        # Names used by schema version 1 before the dynamic contract existed.
+        if self.requirements_policy == "as_is":
+            self.requirements_policy = "install_as_is"
+        elif self.requirements_policy == "unpinned":
+            self.requirements_policy = "resolved"
+        names = [framework.name.lower() for framework in self.frameworks]
+        if len(names) != len(set(names)):
+            raise ValueError("frameworks must not contain the same framework more than once")
+
+        # Fail planning rather than reproducing the archived TensorFlow-1-on-Python-3.10
+        # error. A rejected LLM response is fed back to the planner with this exact reason.
+        requirements = " ".join([*self.packages.pip, *(f"{f.name}=={f.version or ''}" for f in self.frameworks)]).lower()
+        py_minor = ".".join(self.language_version.split(".")[:2])
+        if "tensorflow" in requirements and ("tensorflow==1." in requirements or "tensorflow<2" in requirements):
+            if py_minor not in {"3.5", "3.6", "3.7"}:
+                raise ValueError("TensorFlow 1.x requires Python 3.5-3.7; choose a compatible language_version")
+            numpy_pin = re.search(r"numpy\s*==\s*(1\.\d+)", requirements)
+            if numpy_pin and tuple(map(int, numpy_pin.group(1).split("."))) < (1, 16):
+                raise ValueError("TensorFlow 1.x requires numpy>=1.16,<1.19; do not pin an older numpy")
+            if "protobuf" not in requirements:
+                raise ValueError("TensorFlow 1.x needs an explicit protobuf==3.20.3 compatibility pin")
+        if ("torch==0." in requirements or "pytorch==0." in requirements) and py_minor not in {"2.7", "3.5", "3.6"}:
+            raise ValueError("PyTorch 0.x requires Python 2.7, 3.5, or 3.6; choose a compatible language_version")
+        return self
 
 
 class Hardware(BaseModel):
