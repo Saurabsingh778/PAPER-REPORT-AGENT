@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 
@@ -29,6 +30,41 @@ def json_serializer(obj):
     if isinstance(obj, Path):
         return str(obj)
     return str(obj)
+
+
+def release_marker_gpu(*resources) -> None:
+    """Discard Marker model objects and return their CUDA cache to the system.
+
+    The UI process remains alive after conversion, so simply returning from read_pdf does
+    not promptly release the models' GPU allocations.
+    """
+    seen = set()
+    pending = list(resources)
+    while pending:
+        resource = pending.pop()
+        if resource is None or id(resource) in seen:
+            continue
+        seen.add(id(resource))
+        if isinstance(resource, dict):
+            pending.extend(resource.values())
+        for method_name in ("close", "shutdown", "unload", "cleanup", "release"):
+            method = getattr(resource, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception as exc:
+        print(f"[!] GPU cleanup warning: {exc}")
+    gc.collect()
 
 
 def walk(block, out):
@@ -115,6 +151,11 @@ def read_pdf(pdf_path: str, out_dir: str):
                      blocks=len(blocks), output_dir=str(out))
     # Lets the extraction run find this run as its upstream.
     link_artifact(out / "paper.md", "paper_markdown")
+
+    release_marker_gpu(conv, models, rendered)
+    del conv, models, rendered
+    gc.collect()
+    print("[✓] Released Marker GPU memory.")
     return out
 
 
