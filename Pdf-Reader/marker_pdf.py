@@ -16,6 +16,7 @@ from PIL import Image
 # project root on sys.path to make the shared Logger package importable.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from Logger import get_phase, link_artifact, phase, start_run
+from Gpu import snapshot_llama_server, stop_new_llama_server
 
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
@@ -87,9 +88,44 @@ def walk(block, out):
         walk(child, out)
 
 
+def _release_after_conversion(held: dict, server) -> None:
+    """Give the GPU back once a conversion is over, whether it succeeded or failed.
+
+    1. Drop Marker's models and torch's cached CUDA memory (this process).
+    2. Stop the llama-server that Surya started for this conversion. It is a separate process,
+       so only stopping it frees its VRAM. Only that one process is stopped; this process, and
+       with it the pipeline or UI, keeps running, and a later conversion starts a new server.
+       Set MARKER_KEEP_LLAMA_SERVER=1 to leave it running instead.
+    """
+    release_marker_gpu(*held.values())
+    held.clear()
+    gc.collect()
+
+    result = stop_new_llama_server(server)
+    if result["action"] == "stopped":
+        print(f"[✓] Stopped llama-server (pid {result['pid']}); its GPU memory is released.")
+    elif result["action"] == "failed":
+        print(f"[!] Could not stop llama-server (pid {result['pid']}): {result['reason']}")
+    print("[✓] Released Marker GPU memory.")
+    try:
+        get_phase().info("gpu released", **result)
+    except Exception:
+        pass
+
+
 def read_pdf(pdf_path: str, out_dir: str):
+    """Convert one PDF. The GPU is released afterwards even if the conversion fails."""
     pdf = Path(pdf_path)
     out = Path(out_dir)
+    held: dict = {}                       # models/converter/result, so the cleanup can drop them
+    server = snapshot_llama_server()      # which llama-server (if any) already runs, before we start
+    try:
+        return _convert(pdf, out, held)
+    finally:
+        _release_after_conversion(held, server)
+
+
+def _convert(pdf: Path, out: Path, held: dict):
     out.mkdir(parents=True, exist_ok=True)
 
     if not pdf.is_file():
@@ -106,9 +142,9 @@ def read_pdf(pdf_path: str, out_dir: str):
     parser = ConfigParser(cfg)
 
     print("[2/4] Loading models with llamacpp backend...")
-    models = create_model_dict()
+    models = held["models"] = create_model_dict()
 
-    conv = PdfConverter(
+    conv = held["conv"] = PdfConverter(
         config=parser.generate_config_dict(),
         artifact_dict=models,
         processor_list=parser.get_processors(),
@@ -117,7 +153,7 @@ def read_pdf(pdf_path: str, out_dir: str):
     )
 
     print(f"[3/4] Converting {pdf.name}...")
-    rendered = conv(str(pdf))
+    rendered = held["rendered"] = conv(str(pdf))
 
     print("[4/4] Writing output files...")
     text, _, images = text_from_rendered(rendered)
@@ -151,11 +187,6 @@ def read_pdf(pdf_path: str, out_dir: str):
                      blocks=len(blocks), output_dir=str(out))
     # Lets the extraction run find this run as its upstream.
     link_artifact(out / "paper.md", "paper_markdown")
-
-    release_marker_gpu(conv, models, rendered)
-    del conv, models, rendered
-    gc.collect()
-    print("[✓] Released Marker GPU memory.")
     return out
 
 
