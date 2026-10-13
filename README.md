@@ -7,9 +7,11 @@ code/data links, plans how to run the authors' code, executes it (on a free Kagg
 Docker), compares the numbers it gets against the paper, and writes a reproducibility report.
 
 **Status: working end-to-end demo.** PDF in, `report.md` out, with every intermediate artifact kept
-in one folder per run. A UI is the next step (see [Roadmap](#roadmap)).
+in one folder per run. The execution environment is built per paper from the repo itself (see
+[Dynamic environments](#dynamic-environments)), and a [web UI](#web-ui) sits on top of the pipeline.
 
 ```
+python -m ui.server                           # web UI at http://127.0.0.1:8000
 python main.py run paper.pdf                  # execute on Kaggle (default)
 python main.py run paper.pdf --local          # execute locally in Docker
 python main.py run paper.pdf --plan-only      # stop after the RunSpec; nothing is executed
@@ -31,16 +33,19 @@ python -m Pipeline.selftest                   # offline check of the integration
  [2 extract]   Gemini  ->  main results (claim, metric, value), code repos, data links
     |                       each value/URL is flagged "verified" only if it appears verbatim in the paper
     v
- [3 pipeline]  fetch repo + data  ->  RepoHandler plans a RunSpec  ->  (feasibility gate, local mode)
-    |          ->  execute (Kaggle or Docker)  ->  match output to claims  ->  compare
+ [3 pipeline]  fetch repo + data  ->  RepoHandler scans the repo (code + environment files)
+    |          ->  plans a RunSpec (steps + environment)  ->  (feasibility gate, local mode)
+    |          ->  build the environment and execute (Kaggle or Docker)
+    |          ->  match output to claims  ->  compare
     v
  [4 report]    report.md + report.json   (always written, even if a stage failed)
 ```
 
 **RepoHandler and the RunSpec.** The planner does not run anything itself. It reads the repo's file
-list, README and script heads (plus a static scan for CUDA use) and produces a `RunSpec`: one
-schema-validated plan used for every paper. The plan lists the data to fetch, the pip packages, the
-hardware decision (GPU required / helpful / none, with evidence), the ordered steps, and, for each
+list, README, script heads (plus a static scan for CUDA use) and its dependency files, and produces
+a `RunSpec`: one schema-validated plan used for every paper. The plan lists the data to fetch, the
+execution environment, the hardware decision (GPU required / helpful / none, with evidence), the
+ordered steps, and, for each
 paper claim, which step produces it and the regex that finds its number in the output. A claim
 that cannot be reproduced must say why; none is dropped silently. The runners execute the spec and
 make no decisions of their own.
@@ -51,6 +56,8 @@ Guardrails around the model's plan:
   with no signal, and inconsistent GPU flags. A rejected reply is sent back to the model with the
   validator's errors (up to 3 attempts).
 - A second pass asks the planner to find a way to reproduce any claim it gave up on.
+- The environment section is validated too, including known-incompatible stacks (see
+  [Dynamic environments](#dynamic-environments)); the model is told exactly why a plan was rejected.
 - A local pre-flight reads the cloned repo and checks the plan against it (scripts exist, data paths
   exist, flag values appear in the script source, patch strings are present). If it finds problems,
   one repair pass runs, and the corrected plan is kept only if it is strictly better.
@@ -73,6 +80,65 @@ reproduce:
 | `not_attempted` | no step covered the claim (see the planner's reason) |
 | `timeout` / `env_failed` / `data_missing` / `run_failed` | the step failed; the reason is classified from its stderr |
 
+## Dynamic environments
+
+Old research code often needs an old stack (Python 3.6 with PyTorch 0.4, TensorFlow 1.x), and
+installing it into a current default Python fails. So the environment is not fixed: it is worked out
+from each paper's repository and written into the RunSpec's `environment` section.
+
+**1. Discovery (`RepoScanner.scan_environment`).** Before planning, the scanner collects evidence
+without guessing versions:
+
+- dependency files, up to 12,000 characters each: `requirements*.txt/.in`, `environment*.yml`,
+  `pyproject.toml`, `setup.py`, `setup.cfg`, `Pipfile`, `poetry.lock`, `conda.yml`, `Dockerfile`;
+- Python and framework version hints (PyTorch, TensorFlow, JAX) found in that text;
+- the packages the code imports, from an AST scan of up to 200 scripts, mapped from import names
+  to package names (for example `PIL` to `Pillow`, `sklearn` to `scikit-learn`). This list is a
+  fallback only.
+
+**2. Planning.** The planner receives this evidence and must fill in the environment: language and
+exact `language_version`, frameworks (name, version, backend), CUDA version, packages grouped by
+installer (`pip`, `conda`, `apt`, and custom managers), requirements files and a policy. Rules it is
+given: manifest text is authoritative and imports are fallback-only; a bounded compatibility
+statement in the README overrides a loose lower bound in a manifest; pick one concrete Python
+version, never the host's default; never pair an old framework with a modern Python. If the repo
+documents nothing, the planner infers the stack from the code, resolves it to concrete packages, and
+records that with low-confidence `llm_judgment` evidence. `docker_image` is an optional override;
+leave it empty and the executor chooses.
+
+| `requirements_policy` | Effect |
+|---|---|
+| `resolved` (default) | install the planner's concrete `packages`; manifests are evidence only |
+| `install_as_is` | run `pip install -r` on the listed requirements files, then the `packages` |
+| `ignore` | record the manifests but do not install them |
+
+**3. Validation (`Schema/RunSpec.py`).** The schema rejects a plan, and the planner must correct it,
+when: `language_version` is not concrete (for example `3.6` or `3.11.4`); `requirements_files` lists
+anything other than pip requirements/constraints files (`setup.py`, `pyproject.toml` and
+`environment.yml` are evidence, not `pip install -r` inputs); a framework is listed twice;
+TensorFlow 1.x is planned on a Python outside 3.5 to 3.7, with a `numpy` pin below 1.16, or without
+a `protobuf` pin; or PyTorch 0.x is planned on a Python other than 2.7, 3.5 or 3.6. Specs saved
+before this schema (flat `pip`, `requirements_file`, `system_packages`) still load and are
+normalised into the new contract.
+
+**4. Execution.**
+
+- **Local Docker** picks the base image from the environment (`Sandbox/docker_resolver.py`):
+  an explicit `docker_image` wins; PyTorch 0.x with Python 3.6 on a GPU run uses
+  `pytorch/pytorch:0.4.1-cuda9-cudnn7-devel`; PyTorch 2.2 or 2.3 with Python 3.10 on a GPU run uses
+  the matching `pytorch/pytorch` CUDA runtime image; everything else uses `python:<major.minor>-slim`
+  at exactly the requested version, rather than silently upgrading the interpreter.
+  Inside the container the runner checks that the interpreter matches the request, sets `env_vars`,
+  then installs `apt` packages, requirements files (policy `install_as_is`), the resolved `pip`
+  packages in one command, `conda` packages and custom managers, in that order.
+- **Kaggle** cannot replace its Python, so it checks the interpreter first and stops with a clear
+  message ("Use --local") when the plan needs a different version. Otherwise it applies `env_vars`,
+  installs requirements files and resolved `pip` packages. It does not install `apt`, `conda` or
+  custom-manager packages.
+- In both modes, if any setup command fails the run stops before any reproduction step and records
+  `setup_failed` in the results, so the failure shows up as an environment problem in the logs
+  instead of as wrong numbers.
+
 ## Setup
 
 Requires Python 3.10+.
@@ -84,9 +150,10 @@ pip install kaggle              # Kaggle mode only
 ```
 
 Docker is needed for `--local` (and the NVIDIA container toolkit if you want the GPU). There is no
-requirements file yet; the lines above are the packages the code imports.
+requirements file for the pipeline yet; the lines above are the packages the code imports. The UI
+has its own (`pip install -r ui/requirements.txt`).
 
-Copy `.env.example` to `.env` and fill it in:
+Create a `.env` file in the project root (never commit it) with:
 
 | Variable | Used for |
 |---|---|
@@ -105,7 +172,7 @@ is built to run at no cost: Gemini free tier, the GitHub API, and Kaggle's free 
 |---|---|---|
 | Where | a private Kaggle script kernel, GPU on when the plan needs it, internet on | a Docker container on this machine |
 | Code and data | cloned inside the kernel | downloaded by the agent into a per-paper cache, then copied into the container |
-| Environment | Kaggle's image plus the plan's pip packages | `pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime` plus the plan's pip packages |
+| Environment | Kaggle's own Python (a plan that needs another version stops with "Use --local"), plus the plan's pip packages | an image chosen from the plan's Python/framework versions, plus apt, pip, conda and custom packages (see [Dynamic environments](#dynamic-environments)) |
 | Before running | pushes the kernel, polls its status (up to 4 h) | probes GPU, VRAM, RAM, disk and Docker, then gates the plan |
 
 In local mode the **feasibility gate** is rule-based (no LLM): steps that need more VRAM or time
@@ -143,7 +210,34 @@ A run that fails part-way still ends with a `report.md` that says which stage fa
 `manifest.json` shows which stages finished. `--resume` reuses the slow PDF and extraction stages
 and redoes the rest.
 
-## From code (e.g. a UI)
+## Web UI
+
+A live dashboard over `Pipeline.run_paper()`. It adds no pipeline logic: UI runs write the same
+`Outputs/<paper>/<run_id>/` folders as the CLI, and CLI runs appear in the UI's history.
+
+```
+pip install -r ui/requirements.txt
+python -m ui.server                  # http://127.0.0.1:8000
+python -m ui.server --demo           # simulated stages: no keys, Docker, Kaggle or GPU needed
+python -m ui.server --out <dir> --port 9000
+```
+
+- **New run**: drop a PDF, pick Kaggle or Local Docker, Marker or Docling, and plan-only. The
+  environment card runs the same preflight checks as the CLI and blocks *Start* until the fatal ones
+  pass.
+- **Live run**: stage rail with timings, a streaming console, and the extracted claims and planned
+  steps as soon as those files exist. Refreshing the page replays the run.
+- **Runs** and **Report**: history with status and score, then per-claim detail (paper vs reproduced
+  value, matched output line, planner reason), the plan, the paper's figures, `report.md` and a file
+  browser. *Re-run* uses `--resume`.
+- A JSON API with Server-Sent Events lives under `/api` (docs at `/api/docs`).
+
+Limits: one run at a time, no cancel button (`run_paper()` has no cancellation hook), and no
+authentication, so it binds to `127.0.0.1` and should not be exposed on a network. Demo-mode numbers
+are simulated and the generated RunSpec says so. Marker's GPU memory is released after each PDF
+conversion, so the long-lived server does not hold it.
+
+## From code
 
 ```python
 from Pipeline import run_paper, list_runs, latest_run
@@ -162,8 +256,9 @@ result.report_md, result.status, (result.reproduced, result.total)
 | `Pipeline/` | the glue: run folder layout, manifest, preflight, one module per stage, `run_paper()` |
 | `Pdf-Reader/` | PDF to markdown (Marker, Docling) |
 | `Model/`, `Schema/` | Gemini extraction; `phase_1_schema` and the `RunSpec` contract |
-| `RepoHandler/` | fetch the repo + data, plan the run (`RunSpec`) |
-| `Sandbox/` | feasibility gate, Kaggle and Docker runners, claim matching, comparison, sandbox report |
+| `RepoHandler/` | fetch the repo + data, scan code and environment files, plan the run (`RunSpec`) |
+| `Sandbox/` | feasibility gate, Docker image resolver, Kaggle and Docker runners, claim matching, comparison, sandbox report |
+| `ui/` | FastAPI server and single-page dashboard over the pipeline |
 | `Logger/` | hierarchical run logging (see `Logger/README.md`) |
 | `kaggle_jobs/gpu_test/` | a tiny Kaggle kernel for checking GPU access |
 
@@ -191,8 +286,14 @@ no-claims and failed-stage paths.
 - **One repo per paper.** The first code repo that downloads is used.
 - **Not pinned to a commit.** The default branch is downloaded as a zip, so the report cannot state
   the exact commit that was run.
-- **Fixed local image.** The Docker image is always the PyTorch/CUDA image above; only pip packages
-  vary per paper. Python and framework versions are not yet chosen from the paper's repo.
+- **Old Python stacks need `--local`.** Kaggle cannot change its interpreter, so a paper that needs,
+  say, Python 3.6 stops at environment setup in Kaggle mode.
+- **Few image shortcuts.** Only two PyTorch combinations map to a ready-made CUDA image (0.x on
+  Python 3.6, 2.2/2.3 on Python 3.10); anything else starts from `python:<version>-slim` and installs
+  its packages, which is slower. Import-based package detection knows a short list of common
+  libraries, so a repo with no dependency files relies on the planner's judgment.
+- **Link extraction is lenient.** Links must come from the paper's text. A link goes to `data_links`
+  when the extractor's note mentions data and to `code_repos` otherwise, and duplicates are removed.
 - **Free-tier limits.** One Kaggle session is capped at 12 h, local steps over 8 h are skipped, and
   Gemini free-tier quotas apply. Heavy GPU training will often be marked unreproducible.
 - **Matching is only as good as the output.** A claim is reproduced only if the run prints a number
@@ -200,7 +301,5 @@ no-claims and failed-stage paths.
 
 ## Roadmap
 
-- A UI on top of `run_paper(on_event=...)` and the run folders.
-- Per-paper Docker environments chosen dynamically (Python/framework version from the repo's
-  README and code, with the model deciding when the repo is silent), and a matching dynamic
-  `environment` section in the RunSpec.
+- Cancelling a run from the UI (needs a cancellation hook in `run_paper()`).
+- Running more than one paper at a time in the UI.
