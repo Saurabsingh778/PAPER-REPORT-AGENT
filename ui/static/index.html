@@ -123,6 +123,14 @@ table.t tr:last-child td{border-bottom:0}
 .spin{width:14px;height:14px;border:2px solid color-mix(in srgb,currentColor 25%,transparent);border-top-color:currentColor;border-radius:50%;animation:rot .8s linear infinite;display:inline-block}
 @keyframes rot{to{transform:rotate(360deg)}}
 .toast{position:fixed;right:22px;bottom:22px;z-index:90;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;box-shadow:var(--shadow-lg);font-weight:550;max-width:420px}
+.modal-back{position:fixed;inset:0;z-index:80;background:rgba(9,12,18,.55);backdrop-filter:blur(3px);display:grid;place-items:center;padding:20px}
+.modal{width:min(520px,100%);background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);overflow:hidden}
+.modal-h{display:flex;gap:12px;align-items:center;padding:18px 20px 4px}
+.modal-h .big{width:38px;height:38px;border-radius:10px;background:var(--accent-weak);color:var(--accent);display:grid;place-items:center;flex:none}
+.modal-h h3{margin:0;font-size:16px;letter-spacing:-.01em}
+.modal-b{padding:8px 20px 2px}
+.modal-f{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:16px 20px 18px}
+.modal-f .sp{flex:1}
 
 /* ---------- new run */
 .drop{border:2px dashed var(--line);border-radius:14px;padding:38px 20px;text-align:center;cursor:pointer;background:var(--panel2);transition:.15s}
@@ -381,7 +389,8 @@ const api = {
   tree: (s, r) => api.j(`/api/runs/${enc(s)}/${enc(r)}/tree`),
   job: id => api.j(`/api/jobs/${id}`),
   async text(run, path) { const r = await fetch(fileUrl(run, path)); if (!r.ok) throw new Error('not found'); return r.text(); },
-  start(file, o) { const f = new FormData(); f.append('pdf', file); f.append('mode', o.mode); f.append('reader', o.reader); f.append('plan_only', o.plan_only); return api.j('/api/runs', { method: 'POST', body: f }); },
+  // existing: what to do when this PDF already has a finished report: ask | reuse | regenerate | new
+  start(file, o, existing = 'ask') { const f = new FormData(); f.append('pdf', file); f.append('mode', o.mode); f.append('reader', o.reader); f.append('plan_only', o.plan_only); f.append('existing', existing); return api.j('/api/runs', { method: 'POST', body: f }); },
   resume: (run, o) => api.j('/api/runs/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug: run.slug, run_id: run.run_id, ...o }) }),
 };
 const enc = encodeURIComponent;
@@ -461,6 +470,33 @@ async function route() {
   return viewNew();
 }
 
+/* ============================================================ dialog: this PDF already has a report */
+// Resolves to 'regenerate' | 'reuse' | 'new', or null when dismissed (Esc, click outside).
+function askExisting(match) {
+  return new Promise(resolve => {
+    const close = choice => { document.removeEventListener('keydown', onKey); back.remove(); resolve(choice); };
+    const onKey = e => { if (e.key === 'Escape') close(null); };
+    const when = match.finished || match.created;
+    const how = (match.mode === 'local' ? 'Local Docker' : 'Kaggle') + (match.plan_only ? ', plan only' : '');
+    const rows = [['Paper', match.title || match.slug], ['Result', match.headline || '–'],
+                  ['Generated', when ? relTime(when) : '–'], ['Ran on', how]];
+    const back = h('div', { class: 'modal-back', onclick: e => { if (e.target === back) close(null); } },
+      h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+        h('div', { class: 'modal-h' }, h('div', { class: 'big' }, ic('file', 20)), h('h3', {}, 'A report for this paper already exists')),
+        h('div', { class: 'modal-b' },
+          h('p', { class: 'muted', style: { margin: '6px 0 14px' } },
+            'This PDF was processed before. Regenerating keeps its converted text and extracted claims and redoes planning, execution and the report. The current report is replaced.'),
+          h('dl', { class: 'kv' }, rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
+        h('div', { class: 'modal-f' },
+          h('button', { class: 'btn sm', title: 'Ignore the earlier run: convert the PDF and extract the claims again', onclick: () => close('new') }, 'Start from scratch'),
+          h('div', { class: 'sp' }),
+          h('button', { class: 'btn', onclick: () => close('reuse') }, ic('file', 15), 'No, show existing report'),
+          h('button', { class: 'btn primary', onclick: () => close('regenerate') }, ic('refresh', 15), 'Yes, regenerate'))));
+    document.addEventListener('keydown', onKey);
+    document.body.append(back);
+  });
+}
+
 /* ============================================================ VIEW: new run */
 async function viewNew() {
   const box = h('div');
@@ -484,10 +520,29 @@ async function viewNew() {
     if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { S.newErr = `${f.name} is not a PDF`; return draw(); }
     S.file = f; S.newErr = ''; draw();
   }
-  async function start() {
+  // The server matches the PDF against earlier runs. Three answers besides "a job started":
+  //   decision_required: a finished report exists -> ask, then call again with the person's choice
+  //   reused:            keep that report, nothing runs -> open it
+  //   resumed_from:      earlier converted/extracted files are being reused -> say so
+  async function start(existing = 'ask') {
     busy = true; S.newErr = ''; draw();
-    try { const job = await api.start(S.file, opts); S.file = null; go('#/live/' + job.id); }
-    catch (e) { busy = false; S.newErr = e.message; draw(); }
+    try {
+      const r = await api.start(S.file, opts, existing);
+      if (r.decision_required) {
+        busy = false; draw();
+        const choice = await askExisting(r.match);
+        if (choice) return start(choice);
+        return;
+      }
+      S.file = null;
+      if (r.reused) {
+        toast('Showing the existing report. Nothing was rerun.');
+        return go(`#/run/${enc(r.match.slug)}/${enc(r.match.run_id)}/report`);
+      }
+      const reuses = (r.resumed_from && r.resumed_from.reuses) || [];
+      if (reuses.length) toast(`This PDF was processed before: reusing its ${reuses.includes('extract') ? 'converted text and extracted claims' : 'converted text'}.`);
+      go('#/live/' + r.id);
+    } catch (e) { busy = false; S.newErr = e.message; draw(); }
   }
   function draw() {
     const fatal = (S.env || []).filter(c => !c.ok && c.fatal);
@@ -520,7 +575,7 @@ async function viewNew() {
                   onclick: () => { opts.plan_only = !opts.plan_only; loadEnv(); draw(); } }))))),
           S.newErr ? h('div', { class: 'banner bad' }, ic('alert'), S.newErr) : null,
           h('div', { class: 'row' },
-            h('button', { class: 'btn primary lg', disabled: !ready, onclick: start }, busy ? h('span', { class: 'spin' }) : ic('play', 17), opts.plan_only ? 'Plan reproduction' : 'Start reproduction'),
+            h('button', { class: 'btn primary lg', disabled: !ready, onclick: () => start() }, busy ? h('span', { class: 'spin' }) : ic('play', 17), opts.plan_only ? 'Plan reproduction' : 'Start reproduction'),
             !S.file ? h('span', { class: 'muted small' }, 'Choose a PDF to continue') : fatal.length ? h('span', { class: 'small', style: { color: 'var(--bad)' } }, `${fatal.length} requirement${fatal.length > 1 ? 's' : ''} missing`) : null)),
         h('div', { class: 'stack' },
           h('section', { class: 'card' },

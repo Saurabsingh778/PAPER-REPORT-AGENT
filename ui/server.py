@@ -6,8 +6,12 @@
     python -m ui.server --out D:\\runs --port 9000
 
 What it does
-  * POST /api/runs               upload a PDF + options -> starts run_paper() in a worker thread
-  * GET  /api/jobs/<id>/events   Server-Sent Events: every stage event, plus every line the
+  * POST /api/runs               upload a PDF + options -> starts run_paper() in a worker thread.
+                                 The PDF is matched by hash against earlier runs (Pipeline/lookup.py):
+                                 converted/extracted files are reused instead of redone, and a paper
+                                 whose report already exists is not rerun until the person says so
+                                 (see the `existing` field on start_run)
+  * GET  /api/jobs/<id>/events  Server-Sent Events: every stage event, plus every line the
                                  pipeline prints (stdout/stderr), replayed from the start so a
                                  page refresh rebuilds the live view
   * GET  /api/runs ...           everything already on disk (Outputs/index.json, manifest.json,
@@ -45,11 +49,12 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from Pipeline import PreflightError, list_runs, resolve_output_root, run_paper  # noqa: E402
+from Pipeline import (EXISTING_CHOICES, PreflightError, find_prior_run, list_runs,  # noqa: E402
+                      plan_for_upload, resolve_output_root, run_paper)
 from Pipeline.paths import (EXECUTION_DIR, EXTRACTION_DIR, PDF_DIR, PLAN_DIR)  # noqa: E402
 from Pipeline.pdf_stage import READERS  # noqa: E402
 from Pipeline.preflight import run_preflight  # noqa: E402
-from Pipeline.utils import read_json  # noqa: E402
+from Pipeline.utils import read_json, sha256_file  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MODES = ("kaggle", "local")
@@ -259,8 +264,20 @@ def env(mode: str = "kaggle", reader: str = "marker", plan_only: bool = False):
 
 @app.post("/api/runs")
 async def start_run(pdf: UploadFile = File(...), mode: str = Form("kaggle"), reader: str = Form("marker"),
-                    plan_only: bool = Form(False)):
+                    plan_only: bool = Form(False), existing: str = Form("ask")):
+    """Start a run for an uploaded PDF, reusing what an earlier run of the same PDF already did.
+
+    `existing` says what to do when that earlier run already has a finished report:
+      ask         (default) answer {"decision_required": true, "match": {...}} and start nothing
+      reuse       keep the finished report: answer {"reused": true, "match": {...}}, start nothing
+      regenerate  rerun in the earlier run's folder, reusing its converted/extracted files
+      new         ignore earlier runs and start from scratch
+    An earlier run with converted/extracted files but no finished report is resumed without asking:
+    there is no report to protect. The answer is then the job plus "resumed_from".
+    """
     _check_options(mode, reader)
+    if existing not in EXISTING_CHOICES:
+        raise HTTPException(422, f"existing must be one of {EXISTING_CHOICES}")
     head = await pdf.read(5)
     if head != b"%PDF-":
         raise HTTPException(422, f"{pdf.filename} does not look like a PDF")
@@ -275,13 +292,26 @@ async def start_run(pdf: UploadFile = File(...), mode: str = Form("kaggle"), rea
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise HTTPException(413, f"PDF is larger than {MAX_UPLOAD_MB} MB")
             fh.write(chunk)
-    job = Job(dest.name, {"mode": mode, "reader": reader, "plan_only": plan_only, "size_bytes": size})
+    options = {"mode": mode, "reader": reader, "plan_only": plan_only, "size_bytes": size}
     try:
+        prior = find_prior_run(sha256_file(dest), OUTPUT_ROOT, reader=reader, plan_only=plan_only)
+        action = plan_for_upload(prior, existing)
+        if action in ("ask", "show_report"):        # nothing runs: the temp upload is not needed
+            shutil.rmtree(tmp, ignore_errors=True)
+            return ({"decision_required": True, "match": prior.to_dict()} if action == "ask"
+                    else {"reused": True, "match": prior.to_dict()})
+        if action == "resume":
+            # run_paper(resume=...) takes the PDF stored in the run folder; the temp upload goes
+            job = Job(dest.name, {**options, "resume": f"{prior.slug}/{prior.run_id}"})
+            _start_job(job, pdf=None, mode=mode, reader=reader, plan_only=plan_only,
+                       resume=prior.run_dir, cleanup=tmp)
+            return {**job.snapshot(), "resumed_from": prior.to_dict()}
+        job = Job(dest.name, options)
         _start_job(job, pdf=dest, mode=mode, reader=reader, plan_only=plan_only, resume=None, cleanup=tmp)
-    except HTTPException:
+        return job.snapshot()
+    except Exception:       # includes the 409 from _start_job: the worker never took the temp dir
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    return job.snapshot()
 
 
 class ResumeBody(BaseModel):
