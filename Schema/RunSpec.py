@@ -22,7 +22,67 @@ import shlex
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel as _PydanticBaseModel, Field as _PydanticField
+
+try:
+    from pydantic import field_validator, model_validator
+
+    BaseModel = _PydanticBaseModel
+    Field = _PydanticField
+except ImportError:  # Pydantic v1 compatibility shim
+    from pydantic import root_validator, validator
+
+    def Field(*args, **kwargs):
+        return _PydanticField(*args, **kwargs)
+
+    def field_validator(*fields, mode="after", **kwargs):
+        pre = mode == "before"
+
+        def _dec(fn):
+            raw_fn = fn.__func__ if isinstance(fn, classmethod) else fn
+            return validator(*fields, pre=pre, allow_reuse=True)(raw_fn)
+
+        return _dec
+
+    def model_validator(*, mode="after", **kwargs):
+        pre = mode == "before"
+
+        def _dec(fn):
+            raw_fn = fn.__func__ if isinstance(fn, classmethod) else fn
+            if pre:
+                return root_validator(pre=True, allow_reuse=True)(raw_fn)
+
+            def _wrapped(cls, values):
+                instance = cls.construct(**values)
+                res = raw_fn(instance)
+                return res.__dict__ if hasattr(res, "__dict__") else values
+
+            return root_validator(pre=False, skip_on_failure=True, allow_reuse=True)(_wrapped)
+
+        return _dec
+
+    class BaseModel(_PydanticBaseModel):
+        def model_dump(self, *args, **kwargs):
+            return self.dict(*args, **kwargs)
+
+        def model_dump_json(self, *args, **kwargs):
+            return self.json(*args, **kwargs)
+
+        def model_copy(self, *args, **kwargs):
+            return self.copy(*args, **kwargs)
+
+        @classmethod
+        def model_validate(cls, obj):
+            return cls.parse_obj(obj)
+
+        @classmethod
+        def model_validate_json(cls, raw):
+            return cls.parse_raw(raw)
+
+        @classmethod
+        def model_json_schema(cls):
+            return cls.schema()
+
 
 SCHEMA_VERSION = "1"
 MAX_SESSION_MIN = 720  # one Kaggle session
@@ -326,7 +386,7 @@ class Step(BaseModel):
         description="committed intermediate files used instead of regenerating them")
     patches: list[PathRewrite] = Field(default_factory=list)
     confidence: Confidence
-    evidence: list[Evidence] = Field(min_length=1)
+    evidence: list[Evidence] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -364,6 +424,8 @@ class Step(BaseModel):
 
     @model_validator(mode="after")
     def _consistency(self):
+        if not self.evidence:
+            raise ValueError(f"step '{self.id}': evidence must contain at least 1 item")
         if self.cached_inputs and self.level != "from_cached_artifacts":
             raise ValueError(f"step '{self.id}': cached_inputs set but level is {self.level}")
         if self.level == "from_cached_artifacts" and not self.cached_inputs:
@@ -479,8 +541,6 @@ class RunSpec(BaseModel):
                         f"split into several specs or drop steps")
 
         # honest confidence: the spec is never more sure than its least sure step.
-        # Derived, not a reason to reject: the planner kept tripping on this and each
-        # rejection cost a full LLM retry, so the value is simply lowered to the floor.
         if self.steps:
             floor_conf = min((s.confidence for s in self.steps), key=CONF_RANK.__getitem__)
             if CONF_RANK[self.confidence] > CONF_RANK[floor_conf]:
@@ -506,12 +566,7 @@ def _norm(name: str) -> str:
 
 
 def find_data_folder(data_root, *names: str):
-    """Locate, under a downloaded-data root, the top-level folder a data entry refers to.
-
-    Downloaded repos land in <data_root>/<owner>_<repo>, while a spec names them by `dest`,
-    by `id`, or by the first segment of an in_repo `ref`. Match exact first, then by
-    normalised substring (either direction). Returns a Path or None.
-    """
+    """Locate, under a downloaded-data root, the top-level folder a data entry refers to."""
     root = Path(data_root)
     if not root.is_dir():
         return None
@@ -534,8 +589,6 @@ def find_data_folder(data_root, *names: str):
 
 # ----------------------------------------------------------------------------- pre-flight
 def _check_flag_values(step_id: str, toks: list[str], script: str, script_path: Path) -> list[str]:
-    """`--experiments B_ext8d`: a name-like value (contains '_') that never appears in the script
-    is almost certainly invented by the planner. Paths, numbers and plain words are ignored."""
     try:
         src = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -555,9 +608,7 @@ def _check_flag_values(step_id: str, toks: list[str], script: str, script_path: 
 
 
 def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
-    """Check the spec against the cloned repo. Reads files, never executes anything.
-    Returns a list of problems; empty means the spec is runnable as far as can be told locally.
-    `data_root`: folder where github_repo/http_download data has been fetched, if available."""
+    """Check the spec against the cloned repo. Reads files, never executes anything."""
     repo_root = Path(repo_root).resolve()
     data_root = Path(data_root).resolve() if data_root else None
     problems: list[str] = []
@@ -566,11 +617,8 @@ def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
         s = s.replace("{REPO}", str(repo_root))
         return s.replace("{DATA}", str(data_root)) if data_root else s
 
-    data = {d.id: d for d in spec.data}
     for d in spec.data:
         if d.kind == "in_repo":
-            # in_repo data may live in the code repo OR in a data repo downloaded under {DATA}
-            # (the planner is shown both trees), so it only counts as missing if neither has it.
             in_code = (repo_root / d.ref).exists()
             in_data = bool(data_root and (data_root / d.ref).exists())
             if not in_code and not in_data:
@@ -605,7 +653,7 @@ def check_against_repo(spec: RunSpec, repo_root, data_root=None) -> list[str]:
 
         for r in s.reads:
             if r.startswith("data:"):
-                continue  # existence of data ids is checked above
+                continue
             rel = posixpath.normpath(posixpath.join(cwd_rel, r))
             if not (repo_root / rel).exists() and rel not in produced:
                 problems.append(f"step '{s.id}': reads {r} which is neither in the repo nor written by an earlier step")

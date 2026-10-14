@@ -50,17 +50,7 @@ def run_pipeline(
     data_root=None,
     plan_only: bool = False,
 ) -> dict:
-    """Fetch -> plan -> (feasibility) -> execute -> compare -> report.
-
-    out_dir   execution workspace + phase2.md/json     (default: next to the phase 1 JSON)
-    plan_dir  run_spec.json + planner logs             (default: out_dir)
-    repo_root / data_root   download folders           (default: ./Downloads/Repo, ./Downloads/Data)
-    plan_only stop right after the RunSpec is validated; nothing is executed
-
-    Returns a dict: status (completed | plan_only | no_claims | no_repo | not_runnable),
-    mode, repo_url, spec (RunSpec | None), run_out, rows, n_ok, unreproducible, error, out_dir.
-    Failures inside a stage still raise; the caller decides what a failed run looks like.
-    """
+    """Fetch -> plan -> (feasibility) -> execute (with 5x EnvirementSetup retry + latest fallback) -> compare -> report."""
     p1 = Path(phase1_path)
     extraction = json.loads(p1.read_text(encoding="utf-8"))
     claims = extraction.get("main_results", [])
@@ -170,7 +160,7 @@ def run_pipeline(
                           unreproducible=[c.reason for c in spec.claims if c.status != "mapped"])
             return result
 
-        # 3. Fire Execution Session
+        # 3. Fire Execution Session (with 5-attempt EnvirementSetup retry and latest-version fallback)
         with phase("phase2_execution", "local Docker session" if use_local else "Kaggle session"):
             if use_local:
                 print(f"[3/5] Firing Local Docker session (GPU requirement: {spec.hardware.gpu})...")
@@ -180,6 +170,7 @@ def run_pipeline(
                     workdir=out_dir,
                     repo_dir=local_repo_dir,
                     data_dir=data_root,
+                    plan_dir=plan_dir,
                     _name="run_locally",
                     _summarize=_describe_run,
                 )
@@ -191,6 +182,7 @@ def run_pipeline(
             (out_dir / "execution_results.json").write_text(
                 json.dumps(run_out, indent=2, default=str), encoding="utf-8")
             result["run_out"] = run_out
+            result["spec"] = spec
             if not run_out:
                 result["error"] = "The execution session returned no results.json."
                 get_phase().warning(result["error"])

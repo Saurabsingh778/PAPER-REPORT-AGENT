@@ -37,6 +37,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+Paper Report Agent Code Flow.md
 
 # Node.js / JavaScript / TypeScript
 node_modules/
@@ -76,6 +77,7 @@ lib/
 lib64/
 Outputs/
 parts/
+Pdf/
 sdist/
 var/
 wheels/

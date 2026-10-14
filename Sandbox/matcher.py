@@ -1,18 +1,13 @@
-"""LLM matching call: maps each paper claim to the line of run output that measures it.
-
-Why: regex/signal matching can't generalise (a number near the paper value may be an epoch
-counter, and the real result may sit in a summary table the planner never anticipated).
-The LLM only *locates* evidence; code then verifies it, so the verdict can't be hallucinated:
-  - the quoted line must appear verbatim in the real output,
-  - the reported value must appear in that line,
-  - the value must be within the relative tolerance of the paper value.
-"""
+"""LLM matching call: maps each paper claim to the line of run output that measures it."""
 import json
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseModel
-from google.genai import types
+from Schema.phase_1_schema import BaseModel
+try:
+    from google.genai import types
+except ImportError:
+    types = None
 
 from Model.gemini import client, MODEL
 from Sandbox.compare import NUM, _match, first_number
@@ -45,7 +40,7 @@ def collect_output(run_out, raw_dir: Optional[Path] = None) -> str:
             text = f"--- STDOUT ---\n{s.get('stdout', '')}\n--- STDERR ---\n{s.get('stderr', '')}"
         parts.append(f"===== step {s.get('step_id')} (rc={s.get('rc')}) =====\n{text}")
     out = "\n".join(parts)
-    if len(out) > MAX_OUTPUT_CHARS:  # keep the end: final summaries live there
+    if len(out) > MAX_OUTPUT_CHARS:
         out = "[...head truncated...]\n" + out[-MAX_OUTPUT_CHARS:]
     return out
 
@@ -91,7 +86,7 @@ def verify(m: ClaimMatch, paper, output: str, tol: float):
     if not m.found or m.value is None or not m.line.strip():
         return "ran_but_mismatch", None, None
     line = m.line.strip()
-    if line not in output:  # quoted line must really exist (whitespace-tolerant)
+    if line not in output:
         norm = " ".join(line.split())
         real = next((l.strip() for l in output.splitlines() if " ".join(l.split()) == norm), None)
         if real is None:

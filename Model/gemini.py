@@ -1,6 +1,13 @@
-from google import genai
+try:
+    from google import genai
+except ImportError:  # Offline test fallback when google-genai is not installed
+    genai = None
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*a, **kw):
+        return False
 from Schema.phase_1_schema import Result, Extraction, Link
 import re
 import sys
@@ -12,15 +19,13 @@ from Logger import get_phase, link_artifact, logged, phase, start_run
 
 load_dotenv()
 
-# Default location for the standalone CLI. Relative to this file (not a machine-specific path)
-# and created only when something is written. The integrated pipeline passes its own results_dir.
 OUT_DIR = Path(__file__).resolve().parent / "Model_outputs"
 stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 API_KEY = os.getenv("API_KEY")
 MODEL = os.getenv("MODEL", "gemini-3.5-flash-lite")
 
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(api_key=API_KEY) if (genai is not None and API_KEY) else None
 
 PROMPT = """Extract facts from the scientific paper below.
 Use only information present in the text. If something is absent, return an empty list or null.
@@ -63,11 +68,9 @@ def extract(prompt) -> Extraction:
                 "schema": Extraction.model_json_schema(),
             },
         )
-        # Raw model reply is stored before validation so a schema failure stays debuggable.
         get_phase().save_artifact("extract_response_structured.json", it.output_text)
         return Extraction.model_validate_json(it.output_text)
     except Exception as e:
-        # Fallback for models that don't support response_format (e.g. Gemma): ask for JSON in the prompt
         print(f"structured output failed ({type(e).__name__}: {str(e)[:120]}), falling back to plain JSON")
         get_phase().warning(f"structured output failed, falling back to plain JSON: {type(e).__name__}: {e}")
         schema = json.dumps(Extraction.model_json_schema())
@@ -83,14 +86,6 @@ def compact(s):
     return re.sub(r"\s+", "", s)
 
 def main(out_dir, results_dir=None, stem=None):
-    """Extract claims, code repos and data links from <out_dir>/paper.md.
-
-    Standalone (results_dir=None): extraction.json goes next to paper.md and the stamped
-    phase1_<stamp>.json/.md go to Model/Model_outputs, as before.
-    Integrated (results_dir given): everything is written into results_dir, named <stem>.*
-    (default stem "extraction"), so one run's outputs stay together.
-    Returns {"extraction_json", "phase1_json", "phase1_md", "data"}.
-    """
     out = Path(out_dir)
     extraction_dir = Path(results_dir) if results_dir else out
     phase1_dir = Path(results_dir) if results_dir else OUT_DIR
@@ -113,7 +108,6 @@ def main(out_dir, results_dir=None, stem=None):
 
     all_links = data.code_repos + data.data_links
 
-    # Keep a set of seen URLs to remove duplicates
     seen_urls = set()
     unique_links = []
     for link in all_links:
@@ -121,7 +115,6 @@ def main(out_dir, results_dir=None, stem=None):
             unique_links.append(link)
             seen_urls.add(link.url)
         
-    # Forgiving filter: route to datas if "data" is in the note, otherwise route to repos
     repos = []
     datas = []
     for l in unique_links:
@@ -159,7 +152,7 @@ def main(out_dir, results_dir=None, stem=None):
     phase1_md = phase1_dir / f"{stem}.md"
     phase1_json = phase1_dir / f"{stem}.json"
     phase1_md.write_text("\n".join(lines), encoding="utf-8")
-    if phase1_json.resolve() != extraction_json.resolve():  # integrated runs: same file, write once
+    if phase1_json.resolve() != extraction_json.resolve():
         phase1_json.write_text(json.dumps(final, indent=2), encoding="utf-8")
     print(f"Saved to {phase1_md}")
 
@@ -169,7 +162,6 @@ def main(out_dir, results_dir=None, stem=None):
     for claim in unverified:
         get_phase().warning(f"result value not found in paper text: {claim}")
     get_phase().save_artifact("extraction_final.json", final)
-    # Lets the Phase 2 run find this run as its upstream.
     link_artifact(phase1_json, "phase1_json")
     link_artifact(phase1_md, "phase1_markdown")
     return {"extraction_json": extraction_json, "phase1_json": phase1_json,

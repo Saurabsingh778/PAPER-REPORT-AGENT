@@ -8,9 +8,13 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from google.genai import types
+try:
+    from google.genai import types
+except ImportError:
+    types = None
 from pydantic import ValidationError
 
+from EnvirementSetup import MAX_SETUP_ATTEMPTS, build_latest_fallback_environment
 from Logger import get_phase
 from Model.gemini import client, MODEL
 from Schema.RunSpec import (
@@ -18,7 +22,7 @@ from Schema.RunSpec import (
     Hardware,
     Evidence,
     check_against_repo,
-    )
+)
 
 CUDA_RE = re.compile(
     r"(\.cuda\(|to\(['\"]cuda|torch\.device\(['\"]cuda|torch\.cuda|jax\.devices\(['\"]gpu|tf\.device\(['\"]/GPU)",
@@ -280,18 +284,21 @@ CRITICAL PLANNING GUIDELINES:
 """
 
 
-MAX_SPEC_ATTEMPTS = 3
+MAX_SPEC_ATTEMPTS = MAX_SETUP_ATTEMPTS
 
 
 def _format_validation_error(exc: ValidationError) -> str:
     return "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())
 
 
-def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS):
+def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS, repo_dir: Optional[Path] = None):
     """Ask Gemini for a RunSpec. If the reply fails schema validation, send the validator's
-    errors back and ask for a corrected spec. Every attempt's raw reply is logged."""
+    errors back and ask for a corrected spec (up to 5 attempts). If all 5 attempts fail due to
+    environment validation errors, fall back to the latest versions of all required modules."""
     contents = prompt
     last_error: Optional[ValidationError] = None
+    last_raw: str = ""
+    last_response = None
     for attempt in range(1, max_attempts + 1):
         print(f"[*] Requesting RunSpec generation from Gemini (attempt {attempt}/{max_attempts})...")
         response = client.models.generate_content(
@@ -304,6 +311,8 @@ def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS):
             ),
         )
         raw = response.text or ""
+        last_raw = raw
+        last_response = response
         # Stored before validating, so a rejected reply is always inspectable.
         plog.save_artifact(f"planner_response_attempt{attempt}.json", raw)
         plog.info("model responded", attempt=attempt, model=MODEL,
@@ -327,6 +336,25 @@ def _request_spec(prompt: str, plog, max_attempts: int = MAX_SPEC_ATTEMPTS):
                 + "if you cannot define a signal, remove the claim from `covers` and mark it "
                 + "'unclear' or 'unreproducible' with a reason (only 'mapped' claims list step_ids)."
             )
+
+    # If all 5 attempts failed because the model produced an invalid `environment` block,
+    # replace `environment` with the latest-version fallback environment and re-validate.
+    if last_raw:
+        try:
+            parsed = json.loads(last_raw)
+            if isinstance(parsed, dict):
+                fallback_env = build_latest_fallback_environment(parsed, repo_dir=repo_dir)
+                parsed["environment"] = fallback_env.model_dump()
+                spec = RunSpec.model_validate_json(json.dumps(parsed))
+                spec.warnings.append(
+                    f"Model environment configuration failed validation after {max_attempts} attempts; "
+                    "using fallback environment with latest versions of all modules."
+                )
+                print("[✓] Recovered RunSpec using fallback environment with latest module versions.")
+                plog.warning("recovered RunSpec using latest-version fallback environment")
+                return spec, last_response
+        except Exception:
+            pass
     raise last_error
 
 
@@ -334,7 +362,7 @@ def _unmapped(spec: RunSpec):
     return [c for c in spec.claims if c.status != "mapped"]
 
 
-def _fill_gaps(prompt: str, spec: RunSpec, response, plog, rounds: int = 1):
+def _fill_gaps(prompt: str, spec: RunSpec, response, plog, rounds: int = 1, repo_dir: Optional[Path] = None):
     """Second planning pass for claims the first plan gave up on: ask for extra steps that
     reproduce them. The new plan is kept only if it validates and maps strictly more claims."""
     for rnd in range(1, rounds + 1):
@@ -351,7 +379,7 @@ def _fill_gaps(prompt: str, spec: RunSpec, response, plog, rounds: int = 1):
             "mapped. Give up on a claim only for reasons (a)-(c) in guideline 5, and say which."
         )
         try:
-            new_spec, new_resp = _request_spec(prompt + extra, plog)
+            new_spec, new_resp = _request_spec(prompt + extra, plog, repo_dir=repo_dir)
         except Exception as exc:  # keep the first plan
             plog.warning(f"gap-fill pass failed, keeping first plan: {exc}")
             break
@@ -381,7 +409,7 @@ def _repair_preflight(prompt: str, spec: RunSpec, problems: List[str], response,
         "unreproducible only if no script in the repo can produce it."
     )
     try:
-        new_spec, new_resp = _request_spec(prompt + extra, plog)
+        new_spec, new_resp = _request_spec(prompt + extra, plog, repo_dir=repo_dir)
     except Exception as exc:
         plog.warning(f"pre-flight repair failed, keeping first plan: {exc}")
         return spec, response, problems
@@ -438,8 +466,8 @@ def generate_run_spec(
     )
 
     plog.save_artifact("planner_prompt.txt", prompt)
-    spec, response = _request_spec(prompt, plog)
-    spec, response = _fill_gaps(prompt, spec, response, plog)
+    spec, response = _request_spec(prompt, plog, repo_dir=repo_dir)
+    spec, response = _fill_gaps(prompt, spec, response, plog, repo_dir=repo_dir)
     print(f"[✓] RunSpec generated. Target hardware GPU: {spec.hardware.gpu}")
     plog.info("RunSpec validated", gpu=spec.hardware.gpu, steps=len(spec.steps),
               claims=len(spec.claims), confidence=spec.confidence)

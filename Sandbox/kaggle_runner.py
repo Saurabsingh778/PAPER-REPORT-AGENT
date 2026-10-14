@@ -1,10 +1,11 @@
-"""Run a validated RunSpec on Kaggle and fetch results."""
+"""Run a validated RunSpec on Kaggle and fetch results, with optional 5x LLM environment retry."""
 import json
 import subprocess
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Callable, Optional, Sequence
 
+from EnvirementSetup import MAX_SETUP_ATTEMPTS, run_with_env_retry
 from Schema.RunSpec import RunSpec
 from .config import KAGGLE_USER
 
@@ -17,6 +18,7 @@ SPEC = json.loads(__SPEC_JSON__)
 W = "/kaggle/working"
 REPO_DIR = os.path.join(W, "repo")
 DATA_DIR = os.path.join(W, "data")
+COMPAT_DIR = os.path.join(W, "compat")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 out = {"setup": [], "steps": [], "patches": []}
@@ -41,6 +43,8 @@ print(run("nvidia-smi -L", W, 60)["stdout"])
 # 1. Clone repository
 repo_url = SPEC["repo"]["url"]
 commit = SPEC["repo"]["commit"]
+if os.path.exists(REPO_DIR):
+    shutil.rmtree(REPO_DIR, ignore_errors=True)
 out["clone"] = run(f"git clone {repo_url} {REPO_DIR}", W, 600)
 if commit and commit != "0000000000000000000000000000000000000000":
     run(f"git checkout {commit}", REPO_DIR, 60)
@@ -68,33 +72,42 @@ for step in SPEC.get("steps", []):
                 open(fpath, "w", encoding="utf-8").write(content)
                 out["patches"].append({"file": patch["file"], "status": "applied"})
 
-# 4. Install Environment. Kaggle cannot replace its base interpreter, so fail
-# clearly instead of silently attempting an old package on an incompatible Python.
+# 4. Install Environment
 ENV = SPEC.get("environment", {})
 PACKAGES = ENV.get("packages", {})
+METADATA = {
+    m.get("key"): m.get("value")
+    for m in ENV.get("metadata", [])
+    if isinstance(m, dict) and m.get("key")
+}
+IS_LATEST_FALLBACK = METADATA.get("setup_mode") == "latest_fallback"
+
 for item in ENV.get("env_vars", []):
     if isinstance(item, dict):
         key, value = item.get("name"), item.get("value")
         if key is not None:
             os.environ[str(key)] = str(value)
-if ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
+
+if not IS_LATEST_FALLBACK and ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
     expected = ".".join(str(ENV["language_version"]).split(".")[:2])
     actual = f"{sys.version_info.major}.{sys.version_info.minor}"
     if actual != expected:
         out["setup"].append({"cmd": "python --version", "rc": 2, "sec": 0, "stdout": actual,
                              "stderr": f"RunSpec requires Python {expected}; Kaggle provides Python {actual}. Use --local."})
+        out["setup_failed"] = True
         save()
         raise RuntimeError(out["setup"][-1]["stderr"])
 
 policy = ENV.get("requirements_policy", "resolved")
-if policy == "install_as_is":
+if policy == "install_as_is" and not IS_LATEST_FALLBACK:
     for rel in ENV.get("requirements_files", []):
         out["setup"].append(run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 120 -r "
                                 f"{shlex.quote(os.path.join(REPO_DIR, rel))}", REPO_DIR, 900))
 pip_packages = PACKAGES.get("pip", ENV.get("pip", []))
 if pip_packages:
+    upgrade_flag = "--upgrade " if IS_LATEST_FALLBACK else ""
     requirements = " ".join(shlex.quote(str(pkg)) for pkg in pip_packages)
-    out["setup"].append(run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 120 {requirements}", REPO_DIR, 1800))
+    out["setup"].append(run(f"{shlex.quote(sys.executable)} -m pip install -q {upgrade_flag}--retries 5 --timeout 120 {requirements}", REPO_DIR, 1800))
 if any(result.get("rc", 0) != 0 for result in out["setup"]):
     out["setup_failed"] = True
     save()
@@ -112,6 +125,10 @@ for s in SPEC["steps"]:
         r = dict(done[cmd])
     else:
         r = run(cmd, cwd, timeout)
+        if r["rc"] != 0 and ("setup.py install" in cmd or "setup.py develop" in cmd):
+            r2 = run(f"{shlex.quote(sys.executable)} -m pip install --no-build-isolation --no-deps .", cwd, timeout)
+            if r2["rc"] == 0:
+                r = r2
         done[cmd] = r
 
     r["step_id"] = s["id"]
@@ -163,7 +180,7 @@ def write_kernel(spec: RunSpec, workdir: Path, slug: str, datasets: Sequence[str
     return d
 
 
-def run_on_kaggle(
+def _run_on_kaggle_once(
     spec: RunSpec,
     workdir: Path,
     datasets: Sequence[str] = (),
@@ -175,7 +192,6 @@ def run_on_kaggle(
     p = kaggle("kernels", "push", "-p", str(d))
     print(p.stdout, p.stderr)
     if p.returncode != 0:
-        # Without this a bad token/slug fell into the status loop below and polled for hours.
         raise RuntimeError(f"kaggle kernels push failed (rc={p.returncode}): "
                            f"{(p.stderr or p.stdout).strip()[:500]}")
 
@@ -192,3 +208,37 @@ def run_on_kaggle(
     kaggle("kernels", "output", ref, "-p", str(out))
     f = out / "results.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
+
+
+def run_on_kaggle(
+    spec: RunSpec,
+    workdir: Path,
+    datasets: Sequence[str] = (),
+    slug: str = "repro-agent-run",
+    poll: int = 30,
+    max_wait_min: int = 240,
+    *,
+    repo_dir: Path | None = None,
+    plan_dir: Path | None = None,
+    enable_env_retry: bool = False,
+    max_env_attempts: int = MAX_SETUP_ATTEMPTS,
+    llm_callable: Optional[Callable[[str], Any]] = None,
+):
+    if not enable_env_retry:
+        return _run_on_kaggle_once(spec, workdir, datasets, slug, poll, max_wait_min)
+
+    def _attempt_runner(current_spec: RunSpec, _is_fallback: bool):
+        return _run_on_kaggle_once(current_spec, workdir, datasets, slug, poll, max_wait_min)
+
+    updated_spec, final_out, _ = run_with_env_retry(
+        spec,
+        _attempt_runner,
+        repo_dir=repo_dir,
+        plan_dir=plan_dir,
+        mode="kaggle",
+        max_attempts=max_env_attempts,
+        llm_callable=llm_callable,
+    )
+    spec.environment = updated_spec.environment
+    spec.warnings = list(updated_spec.warnings)
+    return final_out

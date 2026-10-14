@@ -1,4 +1,4 @@
-"""Local Docker execution engine for RunSpec."""
+"""Local Docker execution engine for RunSpec, with 5x LLM environment retry and latest-version fallback."""
 
 import json
 import os
@@ -7,11 +7,16 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from EnvirementSetup import (
+    MAX_SETUP_ATTEMPTS,
+    run_with_env_retry,
+    unpin_repo_manifests,
+)
 from Logger import local_session
-from Schema.RunSpec import RunSpec, find_data_folder
 from Sandbox.docker_resolver import resolve_docker_image
+from Schema.RunSpec import Environment, RunSpec, find_data_folder
 
 DOCKER_RUNNER_SCRIPT = r'''
 import subprocess, json, time, os, sys, shutil, shlex
@@ -24,6 +29,7 @@ REPO_DIR = os.path.join(W, "repo")
 DATA_DIR = os.path.join(W, "data")
 OUT_DIR = os.path.join(W, "out")
 RAW_DIR = os.path.join(OUT_DIR, "raw")
+COMPAT_DIR = os.path.join(W, "compat")
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
 
@@ -58,28 +64,81 @@ def save():
     with open(os.path.join(OUT_DIR, "results.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
 
-# A RunSpec is a runtime contract, not advice.  Refuse to install an old stack
-# into a different interpreter when an explicit custom image breaks that contract.
 ENV = SPEC.get("environment", {})
 PACKAGES = ENV.get("packages", {})
+METADATA = {
+    m.get("key"): m.get("value")
+    for m in ENV.get("metadata", [])
+    if isinstance(m, dict) and m.get("key")
+}
+IS_LATEST_FALLBACK = METADATA.get("setup_mode") == "latest_fallback"
+
 for item in ENV.get("env_vars", []):
     if isinstance(item, dict):
         key, value = item.get("name"), item.get("value")
         if key is not None:
             os.environ[str(key)] = str(value)
-out["environment"] = {"requested_language": ENV.get("language", "python"),
-                      "requested_language_version": ENV.get("language_version"),
-                      "requirements_policy": ENV.get("requirements_policy", "resolved")}
-if ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
+
+out["environment"] = {
+    "requested_language": ENV.get("language", "python"),
+    "requested_language_version": ENV.get("language_version"),
+    "requirements_policy": ENV.get("requirements_policy", "resolved"),
+    "setup_mode": "latest_fallback" if IS_LATEST_FALLBACK else "standard",
+}
+
+if not IS_LATEST_FALLBACK and ENV.get("language", "python").lower() == "python" and ENV.get("language_version"):
     expected = ".".join(str(ENV["language_version"]).split(".")[:2])
     actual = f"{sys.version_info.major}.{sys.version_info.minor}"
     if actual != expected:
         out["setup"].append({"cmd": "python --version", "rc": 2, "sec": 0,
                              "stdout": actual,
                              "stderr": f"RunSpec requires Python {expected}, image provides Python {actual}"})
+        out["setup_failed"] = True
         save()
         print(f"[x] RunSpec requires Python {expected}, image provides Python {actual}")
         sys.exit(2)
+
+# In latest-version fallback mode, inject a lightweight sitecustomize compatibility bridge
+# so legacy scripts that rely on deprecated NumPy/SciPy/NetworkX/TF1 aliases still run
+# when started with the latest versions of all modules.
+if IS_LATEST_FALLBACK:
+    os.makedirs(COMPAT_DIR, exist_ok=True)
+    compat_lines = [
+        "import sys",
+        "try:",
+        "    import numpy as _np",
+        "    for _attr, _builtin in (('bool', bool), ('int', int), ('float', float), ('object', object), ('str', str)):",
+        "        if _attr not in _np.__dict__:",
+        "            setattr(_np, _attr, _builtin)",
+        "except Exception:",
+        "    pass",
+        "try:",
+        "    import scipy.sparse as _sp",
+        "    import scipy.sparse.linalg as _spla",
+        "    import types as _types",
+        "    if 'scipy.sparse.linalg.eigen' not in sys.modules:",
+        "        _eig_mod = _types.ModuleType('scipy.sparse.linalg.eigen')",
+        "        _eig_mod.arpack = _spla",
+        "        sys.modules['scipy.sparse.linalg.eigen'] = _eig_mod",
+        "        sys.modules['scipy.sparse.linalg.eigen.arpack'] = _spla",
+        "except Exception:",
+        "    pass",
+        "try:",
+        "    import networkx as _nx",
+        "    import scipy.sparse as _sp",
+        "    _orig_adj = getattr(_nx, 'adjacency_matrix', None)",
+        "    if _orig_adj is not None:",
+        "        def _compat_adj(*a, **kw):",
+        "            m = _orig_adj(*a, **kw)",
+        "            return _sp.csr_matrix(m) if not isinstance(m, _sp.spmatrix) else m",
+        "        _nx.adjacency_matrix = _compat_adj",
+        "except Exception:",
+        "    pass",
+    ]
+    with open(os.path.join(COMPAT_DIR, "sitecustomize.py"), "w", encoding="utf-8") as sc:
+        sc.write("\n".join(compat_lines) + "\n")
+    existing_pp = os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = f"{COMPAT_DIR}:{REPO_DIR}" + (f":{existing_pp}" if existing_pp else "")
 
 # Check GPU availability
 if SPEC.get("hardware", {}).get("gpu") != "none":
@@ -99,8 +158,7 @@ for step in SPEC.get("steps", []):
                 open(fpath, "w", encoding="utf-8").write(content)
                 out["patches"].append({"file": patch["file"], "status": "applied"})
 
-# 2. Install the resolved environment. Legacy top-level fields are accepted so
-# saved specs from before the dynamic schema remain runnable.
+# 2. Install the resolved environment
 apt_packages = PACKAGES.get("apt", ENV.get("system_packages", []))
 if apt_packages:
     out["setup"].append(run("apt-get update -qq", REPO_DIR, 600, tag="apt_update"))
@@ -109,7 +167,7 @@ if apt_packages:
     out["setup"].append(run(cmd, REPO_DIR, 900, tag="apt_install"))
 
 policy = ENV.get("requirements_policy", "resolved")
-if policy == "install_as_is":
+if policy == "install_as_is" and not IS_LATEST_FALLBACK:
     for n, rel in enumerate(ENV.get("requirements_files", []), 1):
         path = os.path.join(REPO_DIR, rel)
         res = run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 1200 -r {shlex.quote(path)}", REPO_DIR, 900,
@@ -118,9 +176,11 @@ if policy == "install_as_is":
 
 pip_packages = PACKAGES.get("pip", ENV.get("pip", []))
 if pip_packages:
-    print(f"[*] Installing resolved pip environment ({len(pip_packages)} packages)")
+    mode_label = "latest unpinned" if IS_LATEST_FALLBACK else "resolved"
+    print(f"[*] Installing {mode_label} pip environment ({len(pip_packages)} packages)")
+    upgrade_flag = "--upgrade " if IS_LATEST_FALLBACK else ""
     requirements = " ".join(shlex.quote(str(pkg)) for pkg in pip_packages)
-    res = run(f"{shlex.quote(sys.executable)} -m pip install -q --retries 5 --timeout 1200 {requirements}", REPO_DIR, 1800,
+    res = run(f"{shlex.quote(sys.executable)} -m pip install -q {upgrade_flag}--retries 5 --timeout 1200 {requirements}", REPO_DIR, 1800,
               tag="pip_resolved")
     out["setup"].append(res)
 
@@ -130,7 +190,7 @@ if conda_packages:
     out["setup"].append(run(cmd, REPO_DIR, 1200, tag="conda_install"))
 
 custom_managers = PACKAGES.get("custom", [])
-if isinstance(custom_managers, dict):  # specs saved before the list-based schema
+if isinstance(custom_managers, dict):
     custom_managers = [{"manager": name, "packages": packages} for name, packages in custom_managers.items()]
 for custom in custom_managers:
     manager, packages = custom.get("manager"), custom.get("packages", [])
@@ -159,6 +219,14 @@ for s in SPEC["steps"]:
         r = dict(done[cmd])
     else:
         r = run(cmd, cwd, timeout, tag=f"step_{s['id']}")
+        # If `python setup.py install` / `develop` failed due to deprecated easy_install dependency
+        # resolution while packages are already installed, retry with `pip install --no-build-isolation --no-deps .`
+        if r["rc"] != 0 and ("setup.py install" in cmd or "setup.py develop" in cmd):
+            fallback_cmd = f"{shlex.quote(sys.executable)} -m pip install --no-build-isolation --no-deps ."
+            print(f"[*] Retrying failed setup.py step with: {fallback_cmd}")
+            r2 = run(fallback_cmd, cwd, timeout, tag=f"step_{s['id']}_pip_nodeps")
+            if r2["rc"] == 0:
+                r = r2
         done[cmd] = r
 
     r["step_id"] = s["id"]
@@ -166,6 +234,25 @@ for s in SPEC["steps"]:
     r["claim_indices"] = s["covers"]
     r["signals"] = s["signals"]
     out["steps"].append(r)
+
+    # Detect step-level environment/dependency failure so EnvirementSetup can trigger an LLM retry
+    combined_err = f"{r.get('stdout', '')}\n{r.get('stderr', '')}"
+    if r["rc"] != 0 and (
+        s["id"].lower() in ("install", "setup", "build", "env")
+        or any(tok in combined_err for tok in (
+            "ModuleNotFoundError:",
+            "ImportError:",
+            "pkg_resources.DistributionNotFound",
+            "pkg_resources.VersionConflict",
+            "Could not find suitable distribution for Requirement.parse",
+        ))
+    ):
+        out["setup_failed"] = True
+        out["setup_failure_reason"] = f"step '{s['id']}' failed due to environment/dependency error"
+        save()
+        print(f"[x] Step '{s['id']}' failed due to environment error; halting for environment repair.")
+        sys.exit(2)
+
     save()
 
 print("\n[✓] Local execution complete. results.json generated.")
@@ -176,11 +263,7 @@ DEFAULT_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
 
 
 def probe_docker_gpu(image: str = DEFAULT_IMAGE, timeout: int = 180) -> Dict[str, Any]:
-    """Probes Docker's NVIDIA runtime and returns the raw outcome (for logging).
-
-    Uses the image the run will use anyway (so no second image is pulled) and a generous
-    timeout: a first-time pull easily exceeds a few seconds and must not read as "no GPU".
-    """
+    """Probes Docker's NVIDIA runtime and returns the raw outcome (for logging)."""
     t0 = time.time()
     try:
         res = subprocess.run(
@@ -207,32 +290,58 @@ def run_locally(
     repo_dir: Path,
     data_dir: Path,
     image: str | None = None,
+    *,
+    plan_dir: Path | None = None,
+    enable_env_retry: bool = True,
+    max_env_attempts: int = MAX_SETUP_ATTEMPTS,
+    llm_callable: Optional[Callable[[str], Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Runs the RunSpec inside a local Docker container.
-
-    Everything about the container session (workspace prep, GPU probe, docker command,
-    live output, per-step results, raw command logs) is recorded in the run's separate
-    local_session/ log layer.
+    """Runs the RunSpec inside a local Docker container with automatic 5x LLM environment setup
+    retry and fallback to the latest version of all required modules.
     """
-    selected_image = image or resolve_docker_image(
-        spec.environment, gpu_available=spec.hardware.gpu in ("required", "helpful")
+    gpu_wanted = spec.hardware.gpu in ("required", "helpful")
+
+    def _resolve_img(env: Environment) -> str:
+        return image or resolve_docker_image(env, gpu_available=gpu_wanted)
+
+    if not enable_env_retry:
+        selected_image = _resolve_img(spec.environment)
+        with local_session(image=selected_image, workdir=str(workdir), gpu_policy=spec.hardware.gpu) as sess:
+            return _run_locally(spec, workdir, repo_dir, data_dir, selected_image, sess)
+
+    def _attempt_runner(current_spec: RunSpec, is_fallback_latest: bool) -> Optional[Dict[str, Any]]:
+        selected_image = _resolve_img(current_spec.environment)
+        with local_session(image=selected_image, workdir=str(workdir), gpu_policy=current_spec.hardware.gpu) as sess:
+            return _run_locally(
+                current_spec,
+                workdir,
+                repo_dir,
+                data_dir,
+                selected_image,
+                sess,
+                is_fallback_latest=is_fallback_latest,
+            )
+
+    updated_spec, final_out, _ = run_with_env_retry(
+        spec,
+        _attempt_runner,
+        repo_dir=repo_dir,
+        plan_dir=plan_dir,
+        mode="local",
+        max_attempts=max_env_attempts,
+        llm_callable=llm_callable,
+        resolve_image_fn=_resolve_img,
     )
-    with local_session(image=selected_image, workdir=str(workdir), gpu_policy=spec.hardware.gpu) as sess:
-        return _run_locally(spec, workdir, repo_dir, data_dir, selected_image, sess)
+    spec.environment = updated_spec.environment
+    spec.warnings = list(updated_spec.warnings)
+    return final_out
 
 
 _IGNORE_VCS = shutil.ignore_patterns(".git", ".hg", "__pycache__")
 
 
 def _stage_data(spec: RunSpec, repo_dir: Path, data_dir: Path, working_data_dir: Path) -> List[Dict[str, Any]]:
-    """Copy everything under data_dir into working_data_dir (same relative layout, so
-    {DATA}/<anything the planner saw> resolves), then alias each spec.data entry whose
-    dest/id is not already a folder there (relative symlink, valid inside the container).
-
-    Real copies, NOT absolute symlinks: an absolute host path does not exist in the container
-    (it dangled, so the step saw no data), and steps may write next to their input data,
-    which must not touch ./Downloads.
-    """
+    """Copy everything under data_dir into working_data_dir, then alias each spec.data entry."""
     if data_dir.exists():
         for child in sorted(data_dir.iterdir()):
             if child.name.startswith("."):
@@ -249,7 +358,7 @@ def _stage_data(spec: RunSpec, repo_dir: Path, data_dir: Path, working_data_dir:
         entry = {"id": d.id, "dest": name, "kind": d.kind, "source": None, "mode": "none",
                  "candidates": sorted(p.name for p in working_data_dir.iterdir())}
         if d.kind == "in_repo" and (repo_dir / d.ref).exists():
-            entry.update(source=str(repo_dir / d.ref), mode="in_code_repo")   # reached via {REPO}
+            entry.update(source=str(repo_dir / d.ref), mode="in_code_repo")
         elif (working_data_dir / name).exists():
             entry.update(source=str(working_data_dir / name), mode="direct")
         else:
@@ -258,7 +367,7 @@ def _stage_data(spec: RunSpec, repo_dir: Path, data_dir: Path, working_data_dir:
             if hit is not None:
                 alias = working_data_dir / name
                 try:
-                    alias.symlink_to(hit.name, target_is_directory=True)   # relative link
+                    alias.symlink_to(hit.name, target_is_directory=True)
                     entry.update(source=str(hit), mode="alias")
                 except OSError:
                     shutil.copytree(hit, alias)
@@ -269,8 +378,7 @@ def _stage_data(spec: RunSpec, repo_dir: Path, data_dir: Path, working_data_dir:
 
 def missing_data_paths(spec: RunSpec, working_data_dir: Path) -> List[tuple]:
     """(step_id, relative path) for every {DATA}/... argument in a step command that does not
-    exist in the staged data. Output locations a step creates itself are not flagged: only
-    paths whose parent folder is also absent are reported."""
+    exist in the staged data."""
     out = []
     for s in spec.steps:
         try:
@@ -295,6 +403,8 @@ def _run_locally(
     data_dir: Path,
     image: str,
     sess,
+    *,
+    is_fallback_latest: bool = False,
 ) -> Optional[Dict[str, Any]]:
     workdir = Path(workdir).resolve()
     repo_dir = Path(repo_dir).resolve()
@@ -304,7 +414,6 @@ def _run_locally(
     runner_dir.mkdir(parents=True, exist_ok=True)
     out_dir = runner_dir / "out"
     out_dir.mkdir(exist_ok=True)
-    # Drop leftovers from an earlier run so stale results are never read or logged as new.
     shutil.rmtree(out_dir / "raw", ignore_errors=True)
     (out_dir / "results.json").unlink(missing_ok=True)
 
@@ -314,12 +423,16 @@ def _run_locally(
         shutil.rmtree(working_repo_dir)
     shutil.copytree(repo_dir, working_repo_dir)
 
-    # 2. Stage data. The planner is shown the downloaded data as paths relative to {DATA}
-    #    (e.g. "digital-synthesis-lab_DM2/demo/..."), so {DATA} inside the container must have
-    #    exactly that layout. Staging one folder under spec.data's dest/id instead (the old
-    #    behaviour) moved it to /workspace/data/<id>/ and every {DATA}/<repo>/... path broke.
+    # In fallback mode (after 5 failed attempts), strip hardcoded version pins in the working
+    # repo's setup.py / requirements.txt so `setup.py install` does not reject latest packages.
+    if is_fallback_latest:
+        unpinned_files = unpin_repo_manifests(working_repo_dir)
+        if unpinned_files:
+            print(f"[*] Unpinned version constraints in working repo manifests: {unpinned_files}")
+
+    # 2. Stage data
     working_data_dir = runner_dir / "data"
-    shutil.rmtree(working_data_dir, ignore_errors=True)  # rebuilt each run (drops stale copies/links)
+    shutil.rmtree(working_data_dir, ignore_errors=True)
     working_data_dir.mkdir(exist_ok=True)
     data_mounts = _stage_data(spec, repo_dir, data_dir, working_data_dir)
     missing = missing_data_paths(spec, working_data_dir)
@@ -328,9 +441,10 @@ def _run_locally(
     sess.workspace(runner_dir, repo_dir, working_repo_dir, data_dir, data_mounts)
 
     # 3. Write runner files
-    (runner_dir / "spec.json").write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    spec_json_str = spec.model_dump_json(indent=2)
+    (runner_dir / "spec.json").write_text(spec_json_str, encoding="utf-8")
     (runner_dir / "runner.py").write_text(DOCKER_RUNNER_SCRIPT, encoding="utf-8")
-    sess.save_spec(spec.model_dump_json(indent=2))
+    sess.save_spec(spec_json_str)
     sess.save_runner(DOCKER_RUNNER_SCRIPT)
 
     # 4. Configure Docker command
@@ -373,9 +487,11 @@ def _run_locally(
     process = subprocess.Popen(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     sess.container_started()
 
+    container_output_lines: List[str] = []
     for line in iter(process.stdout.readline, ""):
         print(line, end="")
         sess.container_line(line)
+        container_output_lines.append(line)
     process.wait()
     sess.container_exit(process.returncode)
 
@@ -383,4 +499,21 @@ def _run_locally(
     sess.ingest_results(results_file if results_file.exists() else None, out_dir / "raw")
     if results_file.exists():
         return json.loads(results_file.read_text(encoding="utf-8"))
+
+    if process.returncode != 0:
+        return {
+            "setup": [
+                {
+                    "cmd": shlex.join(docker_cmd),
+                    "rc": process.returncode,
+                    "sec": 0,
+                    "stdout": "",
+                    "stderr": "".join(container_output_lines)[-4000:],
+                }
+            ],
+            "steps": [],
+            "patches": [],
+            "setup_failed": True,
+            "setup_failure_count": 1,
+        }
     return None
